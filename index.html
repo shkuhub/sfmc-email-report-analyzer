@@ -36,6 +36,11 @@
       border: 3px solid #E5E8EC; border-top-color: #333D4B;
       border-radius: 50%; animation: spin 0.75s linear infinite; margin: 0 auto 16px;
     }
+    .spinner-sm {
+      width: 22px; height: 22px;
+      border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+      border-radius: 50%; animation: spin 0.75s linear infinite; flex-shrink: 0;
+    }
 
     /* 업로드 카드 */
     .upload-card {
@@ -74,7 +79,7 @@
     .faint   { color: #C4C9D0 !important; }
     .bold    { font-weight: 700; }
 
-    /* 다시하기 버튼 */
+    /* 버튼 */
     .retry-btn {
       background: #fff; border: 1px solid #E5E8EC; border-radius: 10px;
       padding: 7px 16px; font-size: 12px; font-weight: 600; color: #333D4B;
@@ -82,22 +87,55 @@
     }
     .retry-btn:hover { background: #F9FAFB; }
 
-    /* 진행률 바 */
-    .progress-bar-bg { background: #F2F4F6; border-radius: 100px; height: 6px; width: 200px; margin: 12px auto 0; overflow: hidden; }
-    .progress-bar-fill { background: #333D4B; height: 100%; border-radius: 100px; transition: width 0.3s; }
-
     /* 편집 가능 셀 hover */
     .td-editable:hover { background: #F5F7FA !important; cursor: text; }
     .td-editable:hover input { background: #F5F7FA !important; }
 
     .raw-toggle {
       font-size: 11px; color: #B8BFC8; cursor: pointer; text-decoration: underline;
-      background: none; border: none; font-family: inherit; margin-top: 8px;
+      background: none; border: none; font-family: inherit; margin-top: 4px; display: block;
     }
     .raw-box {
-      margin-top: 8px; background: #F9FAFB; border: 1px solid #E5E8EC;
-      border-radius: 10px; padding: 12px; font-size: 11px; color: #8B95A1;
-      white-space: pre-wrap; max-height: 160px; overflow-y: auto;
+      margin: 6px 12px 10px; background: #F9FAFB; border: 1px solid #E5E8EC;
+      border-radius: 10px; padding: 10px; font-size: 11px; color: #8B95A1;
+      white-space: pre-wrap; max-height: 120px; overflow-y: auto;
+    }
+
+    /* 이미지 슬롯 카드 */
+    .slot-card {
+      flex: 1; min-width: 0; background: #fff; border-radius: 16px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07); overflow: hidden;
+      display: flex; flex-direction: column; position: relative;
+    }
+    .slot-thumb {
+      position: relative; height: 110px; background: #F2F4F6; flex-shrink: 0; overflow: hidden;
+    }
+    .slot-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    /* 추가 카드 */
+    .add-slot-card {
+      flex: 1; min-width: 0; background: #F9FAFB;
+      border: 2px dashed #E5E8EC; border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 8px; cursor: pointer;
+      min-height: 155px; transition: all 0.15s; color: #B8BFC8;
+    }
+    .add-slot-card:hover { background: #F2F4F6; border-color: #C4C9D0; color: #8B95A1; }
+
+    /* 빈 자리 */
+    .empty-slot {
+      flex: 1; min-width: 0; border-radius: 16px;
+      background: #FAFAFA; border: 1.5px dashed #EBEBEB;
+      min-height: 155px;
+    }
+
+    /* 합산 배지 */
+    .sum-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #EEF2FF; border: 1px solid #C7D2FE;
+      border-radius: 100px; padding: 4px 12px;
+      font-size: 11px; font-weight: 700; color: #4F46E5;
+      margin-bottom: 14px;
     }
   </style>
 </head>
@@ -111,30 +149,65 @@
     </svg>
   </div>
   <p style="font-size:20px;font-weight:800;color:#333D4B;margin:0;">여기에 놓으세요</p>
-  <p style="font-size:14px;color:#8B95A1;margin:0;">Tesseract.js로 로컬 분석합니다</p>
+  <p style="font-size:14px;color:#8B95A1;margin:0;">최대 3장까지 추가할 수 있습니다</p>
 </div>
 
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useCallback } = React;
+const MAX_SLOTS = 3;
 
-/* ─────────────────────────── OCR 텍스트 파서 ─────────────────────────── */
+/* ─────────────────────── 리포트 합산 ─────────────────────── */
+function mergeReports(reports) {
+  function sumNull(...vals) {
+    const nums = vals.filter(v => v !== null && v !== undefined);
+    return nums.length > 0 ? nums.reduce((a, b) => a + b, 0) : null;
+  }
+  return {
+    publishedOn: reports.map(r => r.publishedOn).filter(Boolean).join(', '),
+    totalSent:   sumNull(...reports.map(r => r.totalSent)),
+    delivered:   sumNull(...reports.map(r => r.delivered)),
+    deliveryRate: null,
+    bounces: {
+      total: sumNull(...reports.map(r => r.bounces?.total)),
+      hard:  sumNull(...reports.map(r => r.bounces?.hard)),
+      soft:  sumNull(...reports.map(r => r.bounces?.soft)),
+      block: sumNull(...reports.map(r => r.bounces?.block)),
+    },
+    opens: {
+      total:  sumNull(...reports.map(r => r.opens?.total)),
+      unique: sumNull(...reports.map(r => r.opens?.unique)),
+    },
+    clicks: {
+      total:  sumNull(...reports.map(r => r.clicks?.total)),
+      unique: sumNull(...reports.map(r => r.clicks?.unique)),
+    },
+    conversions: {
+      total:  sumNull(...reports.map(r => r.conversions?.total)),
+      unique: sumNull(...reports.map(r => r.conversions?.unique)),
+    },
+    unsubscribes: {
+      total:  sumNull(...reports.map(r => r.unsubscribes?.total)),
+      unique: sumNull(...reports.map(r => r.unsubscribes?.unique)),
+    },
+    didNotOpen:  sumNull(...reports.map(r => r.didNotOpen)),
+    didNotClick: sumNull(...reports.map(r => r.didNotClick)),
+  };
+}
+
+/* ─────────────────────── OCR 파서 ─────────────────────── */
 function parseReport(rawText) {
-  // 줄바꿈 정규화, 연속 공백 제거 (non-breaking space \u00a0 포함)
   const t = rawText
     .replace(/\r\n/g, '\n')
-    .replace(/[\u00a0\t ]+/g, ' ')          // non-breaking space 포함 정규화
-    .replace(/(\d)\s*,\s*(\d)/g, '$1,$2');  // OCR이 "1, 234"로 쪼갠 숫자 복원
+    .replace(/[\u00a0\t ]+/g, ' ')
+    .replace(/(\d)\s*,\s*(\d)/g, '$1,$2');
 
-  /* 숫자 추출 헬퍼 - 쉼표 포함 숫자를 파싱 */
   function num(str) {
     if (!str) return null;
     const n = parseInt(str.replace(/,/g, '').replace(/\s/g, ''), 10);
     return isNaN(n) ? null : n;
   }
-
-  /* 패턴 목록 중 첫 번째 매치 반환 */
   function find(patterns) {
     for (const pat of patterns) {
       const m = t.match(pat);
@@ -142,58 +215,27 @@ function parseReport(rawText) {
     }
     return null;
   }
+  function findNum(patterns) { return num(find(patterns)); }
 
-  function findNum(patterns) {
-    return num(find(patterns));
-  }
-
-  /* ── 날짜 ── */
   const publishedOn = find([
     /Last\s+Published\s+On[:\s]+([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{4}\s+[0-9]{1,2}:[0-9]{2}\s*[APM]+)/i,
     /Published\s+On[:\s]+([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{4}\s+[0-9]{1,2}:[0-9]{2}\s*[APM]+)/i,
   ]) || '';
 
-  /* ── Total Sent ──
-     Salesforce MC: "Total Sent: 78,301"  */
-  const totalSent = findNum([
-    /Total\s+Sent[:\s]+([0-9,]+)/i,
-    /total\s+sent\D+([0-9,]+)/i,
-  ]);
-
-  /* ── Delivered ── */
-  const delivered = findNum([
-    /Delivered[:\s]+([0-9,]+)/i,
-    /^Delivered\s+([0-9,]+)/im,
-  ]);
-
-  /* ── Delivery Rate ── */
-  const drMatch = t.match(/Delivery\s+Rate[:\s]+([0-9.]+)%/i)
-                 || t.match(/([0-9]{2,3}\.[0-9]+)%.*[Dd]elivery/);
+  const totalSent = findNum([/Total\s+Sent[:\s]+([0-9,]+)/i, /total\s+sent\D+([0-9,]+)/i]);
+  const delivered = findNum([/Delivered[:\s]+([0-9,]+)/i, /^Delivered\s+([0-9,]+)/im]);
+  const drMatch = t.match(/Delivery\s+Rate[:\s]+([0-9.]+)%/i) || t.match(/([0-9]{2,3}\.[0-9]+)%.*[Dd]elivery/);
   const deliveryRate = drMatch ? parseFloat(drMatch[1]) : null;
 
-  /* ── Bounces ──
-     "Total Bounces: 415"  "Hard Bounce: 270"  "Soft Bounce: 106"  "Block Bounce: 39" */
-  const bounceTotal = findNum([
-    /Total\s+Bounces?[:\s]+([0-9,]+)/i,
-    /Bounces?\s+total[:\s]+([0-9,]+)/i,
-  ]);
+  const bounceTotal = findNum([/Total\s+Bounces?[:\s]+([0-9,]+)/i, /Bounces?\s+total[:\s]+([0-9,]+)/i]);
   const bounceHard  = findNum([/Hard\s+Bounce[:\s]+([0-9,]+)/i]);
   const bounceSoft  = findNum([/Soft\s+Bounce[:\s]+([0-9,]+)/i]);
   const bounceBlock = findNum([/Block\s+Bounce[:\s]+([0-9,]+)/i]);
 
-  /* ── Inbox Activity: Opens, Clicks, Conversions, Unsubscribes ──
-     행 구조: "Opens  8,221  6,557  8.419%"
-     OCR 결과는 줄로 분리되거나 공백으로 이어질 수 있어 두 가지 방식으로 처리  */
-
   function extractPair(rowPatterns) {
     for (const pat of rowPatterns) {
       const m = t.match(pat);
-      if (m) {
-        return {
-          total:  num(m[1]),
-          unique: num(m[2]),
-        };
-      }
+      if (m) return { total: num(m[1]), unique: num(m[2]) };
     }
     return { total: null, unique: null };
   }
@@ -202,73 +244,38 @@ function parseReport(rawText) {
     /Opens?\s+([0-9,]+)\s+([0-9,]+)/i,
     /^Opens?\s+([0-9,]+)[\s\S]{0,30}?([0-9,]+)\s+[0-9.]+%/im,
   ]);
-
   const clicks = extractPair([
-    // ① 기본: "Clicks 543 412"
     /Clicks?\s+([0-9,]+)\s+([0-9,]+)/i,
-    // ② 비율 포함: "Clicks 543 412 5.12%"
     /^Clicks?\s+([0-9,]+)[\s\S]{0,30}?([0-9,]+)\s+[0-9.]+%/im,
-    // ③ 콜론 구분: "Clicks: 543 412" 또는 "Clicks:543"
     /Clicks?[:\s]+([0-9,]+)\s+([0-9,]+)/i,
-    // ④ 괄호 포함: "Clicks (3 Links) 543 412" — 괄호 안 숫자 건너뜀
     /Clicks?\s*(?:\([^)]*\)\s*)?([0-9,]{2,})\s+([0-9,]+)/i,
-    // ⑤ 줄바꿈 분리: "Clicks\n543\n412"
     /Clicks?\s*\n[^\d\n]*([0-9,]+)[^\d\n]*\n[^\d\n]*([0-9,]+)/im,
-    // ⑥ Link Clicks / Unique Clicks 표기
     /(?:Link\s+|Unique\s+)?Clicks?[\s:]+([0-9,]+)/i,
-    // ⑦ 마지막 폴백: Clicks 다음 줄 첫 번째 숫자만
     /^Clicks?[^\d\n]*\n\s*([0-9,]+)/im,
   ]);
-
   const conversions = extractPair([
-    // ① 기본: "Conversions 12 10"
     /Conversions?\s+([0-9,]+)\s+([0-9,]+)/i,
-    // ② 줄 시작: "^Conversions 12"
     /^Conversions?\s+([0-9,]+)/im,
-    // ③ 콜론 구분: "Conversions: 12 10"
     /Conversions?[:\s]+([0-9,]+)\s+([0-9,]+)/i,
-    // ④ Total Conversions 표기
     /Total\s+Conversions?[\s:]+([0-9,]+)/i,
-    // ⑤ 줄바꿈 분리: "Conversions\n12\n10"
     /Conversions?\s*\n[^\d\n]*([0-9,]+)[^\d\n]*\n[^\d\n]*([0-9,]+)/im,
-    // ⑥ 마지막 폴백: Conversions 다음 줄 첫 번째 숫자만
     /^Conversions?[^\d\n]*\n\s*([0-9,]+)/im,
   ]);
 
-  // Unsubscribes: total이 '-' 인 경우 많음 → unique만 추출
-  const unsubMatch = t.match(/Unsubscribes?\s+[-–—]?\s*([0-9,]+)/i)
-                   || t.match(/Unsubscribe[:\s]+([0-9,]+)/i);
-  const unsubscribes = {
-    total:  null,
-    unique: unsubMatch ? num(unsubMatch[1]) : null,
-  };
+  const unsubMatch = t.match(/Unsubscribes?\s+[-–—]?\s*([0-9,]+)/i) || t.match(/Unsubscribe[:\s]+([0-9,]+)/i);
+  const unsubscribes = { total: null, unique: unsubMatch ? num(unsubMatch[1]) : null };
 
-  /* ── Unengaged Subscribers ── */
-  const didNotOpen  = findNum([
-    /Did\s+not\s+open\s+([0-9,]+)/i,
-    /not\s+open[:\s]+([0-9,]+)/i,
-  ]);
-  const didNotClick = findNum([
-    /Did\s+not\s+click\s+([0-9,]+)/i,
-    /not\s+click[:\s]+([0-9,]+)/i,
-  ]);
+  const didNotOpen  = findNum([/Did\s+not\s+open\s+([0-9,]+)/i, /not\s+open[:\s]+([0-9,]+)/i]);
+  const didNotClick = findNum([/Did\s+not\s+click\s+([0-9,]+)/i, /not\s+click[:\s]+([0-9,]+)/i]);
 
   return {
-    publishedOn,
-    totalSent,
-    delivered,
-    deliveryRate,
+    publishedOn, totalSent, delivered, deliveryRate,
     bounces: { total: bounceTotal, hard: bounceHard, soft: bounceSoft, block: bounceBlock },
-    opens,
-    clicks,
-    conversions,
-    unsubscribes,
-    didNotOpen,
-    didNotClick,
+    opens, clicks, conversions, unsubscribes, didNotOpen, didNotClick,
   };
 }
 
-/* ─────────────────────────── 날짜 변환 ─────────────────────────── */
+/* ─────────────────────── 유틸 ─────────────────────── */
 function toKoreanDate(raw) {
   if (!raw) return null;
   const DAYS = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
@@ -277,21 +284,19 @@ function toKoreanDate(raw) {
   if (parts.length !== 3) return raw;
   const [d, m, y] = parts;
   if (isNaN(d)||isNaN(m)||isNaN(y)) return raw;
-  const dt = new Date(y, m - 1, d);
+  const dt = new Date(y, m-1, d);
   return `${y}년 ${m}월 ${d}일 ${DAYS[dt.getDay()]}`;
 }
-
-/* ─────────────────────────── 숫자 포맷 ─────────────────────────── */
 function fmt(n) {
   if (n === null || n === undefined) return null;
   return n.toLocaleString("ko-KR");
 }
-function calcRate(num, den, decimals = 2) {
-  if (num == null || !den) return null;
-  return ((num / den) * 100).toFixed(decimals) + "%";
+function calcRate(num, den, decimals=2) {
+  if (num==null||!den) return null;
+  return ((num/den)*100).toFixed(decimals)+"%";
 }
 
-/* ─────────────────────────── 인라인 편집 셀 ─────────────────────────── */
+/* ─────────────────────── EditableNum ─────────────────────── */
 function EditableNum({ value, onSave, bold, faint, secTop }) {
   const [editing, setEditing] = React.useState(false);
   const [draft,   setDraft]   = React.useState("");
@@ -301,119 +306,73 @@ function EditableNum({ value, onSave, bold, faint, secTop }) {
     setDraft(value !== null && value !== undefined ? String(value) : "");
     setEditing(true);
   }
-
-  React.useEffect(() => {
-    if (editing) inputRef.current?.select();
-  }, [editing]);
-
+  React.useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
   function commit() {
-    const n = parseInt(draft.replace(/,/g, "").replace(/\s/g, ""), 10);
+    const n = parseInt(draft.replace(/,/g,"").replace(/\s/g,""), 10);
     onSave(isNaN(n) ? null : n);
     setEditing(false);
   }
-
   const cls = `td-num td-editable${secTop?" sec-top":""}${bold?" bold":""}${faint?" faint":""}`;
-
   if (editing) {
     return (
-      <td className={cls} style={{ padding:"4px 8px" }}>
-        <input
-          ref={inputRef}
-          value={draft}
+      <td className={cls} style={{padding:"4px 8px"}}>
+        <input ref={inputRef} value={draft}
           onChange={e => setDraft(e.target.value)}
           onBlur={commit}
-          onKeyDown={e => { if (e.key==="Enter") commit(); if (e.key==="Escape") setEditing(false); }}
-          style={{
-            width:"100%", border:"none", borderBottom:"2px solid #333D4B",
+          onKeyDown={e => { if(e.key==="Enter") commit(); if(e.key==="Escape") setEditing(false); }}
+          style={{ width:"100%", border:"none", borderBottom:"2px solid #333D4B",
             outline:"none", background:"transparent", fontFamily:"inherit",
-            fontSize:"13px", fontWeight: bold ? "700" : "400",
-            textAlign:"center", fontVariantNumeric:"tabular-nums", color:"#333D4B",
-          }}
-        />
+            fontSize:"13px", fontWeight:bold?"700":"400", textAlign:"center",
+            fontVariantNumeric:"tabular-nums", color:"#333D4B" }} />
       </td>
     );
   }
-
   return (
     <td className={cls} onClick={startEdit}>
-      {(value !== null && value !== undefined) ? fmt(value) : <span className="faint">—</span>}
+      {(value!==null&&value!==undefined) ? fmt(value) : <span className="faint">—</span>}
     </td>
   );
 }
 
-/* ─────────────────────────── 테이블 ─────────────────────────── */
+/* ─────────────────────── ReportTable ─────────────────────── */
 const DASH = <span className="faint">—</span>;
 
 function ReportTable({ data, onDataChange }) {
   const delivered    = data.delivered ?? data.totalSent;
   const uniqueOpens  = data.opens?.unique;
   const uniqueClicks = data.clicks?.unique;
-
-  // 총 발송 건수 = 총 전송 성공 건수 + 반송 총 건수 (계산 우선, OCR 값 보조)
-  const calcTotalSent = (delivered != null && data.bounces?.total != null)
-    ? delivered + data.bounces.total
-    : data.totalSent;
-
-  // 오픈하지 않은 고객 = 수동 수정값 우선, 없으면 총 전송 성공 - 유니크 오픈
-  const calcDidNotOpen = data.didNotOpen != null
-    ? data.didNotOpen
-    : (delivered != null && uniqueOpens != null ? delivered - uniqueOpens : null);
-
-  // 클릭하지 않은 고객 = 수동 수정값 우선, 없으면 총 전송 성공 - 유니크 클릭
-  const calcDidNotClick = data.didNotClick != null
-    ? data.didNotClick
-    : (delivered != null && uniqueClicks != null ? delivered - uniqueClicks : null);
+  const calcTotalSent   = (delivered!=null && data.bounces?.total!=null) ? delivered+data.bounces.total : data.totalSent;
+  const calcDidNotOpen  = data.didNotOpen!=null ? data.didNotOpen : (delivered!=null && uniqueOpens!=null ? delivered-uniqueOpens : null);
+  const calcDidNotClick = data.didNotClick!=null ? data.didNotClick : (delivered!=null && uniqueClicks!=null ? delivered-uniqueClicks : null);
 
   const bounceRate = calcRate(data.bounces?.total, calcTotalSent);
   const hardRate   = calcRate(data.bounces?.hard,  data.bounces?.total);
   const blockRate  = calcRate(data.bounces?.block, data.bounces?.total);
   const softRate   = calcRate(data.bounces?.soft,  data.bounces?.total);
 
-  // 중첩 경로 업데이트 헬퍼
   function update(path, val) {
     const keys = path.split(".");
     const next = JSON.parse(JSON.stringify(data));
     let ref = next;
-    for (let i = 0; i < keys.length - 1; i++) ref = ref[keys[i]];
-    ref[keys[keys.length - 1]] = val;
+    for (let i=0; i<keys.length-1; i++) ref = ref[keys[i]];
+    ref[keys[keys.length-1]] = val;
     onDataChange(next);
   }
 
-  const Cat  = ({ children, rowSpan, secTop }) => (
-    <td rowSpan={rowSpan} className={`td-cat${secTop?" sec-top":""}`}>{children}</td>
-  );
-  const Lbl  = ({ children, indent, secTop }) => (
-    <td className={`${indent?"td-lbl-i":"td-lbl"}${secTop?" sec-top":""}`}>{children}</td>
-  );
-  const Num  = ({ n, bold, faint, secTop }) => (
-    <td className={`td-num${secTop?" sec-top":""}${bold?" bold":""}${faint?" faint":""}`}>
-      {(n!==null&&n!==undefined) ? fmt(n) : DASH}
-    </td>
-  );
-  const Rate = ({ rate, secTop }) => (
-    <td className={`td-rate${secTop?" sec-top":""}`}
-      style={{ color: rate ? "#333D4B" : "#C4C9D0" }}>
-      {rate || "—"}
-    </td>
-  );
-  const Note = ({ children, rowSpan, secTop }) => (
-    <td rowSpan={rowSpan||1} className={`td-note${secTop?" sec-top":""}`}>
-      {children||""}
-    </td>
-  );
-  const EN = (props) => <EditableNum {...props} />;
+  const Cat  = ({children,rowSpan,secTop}) => <td rowSpan={rowSpan} className={`td-cat${secTop?" sec-top":""}`}>{children}</td>;
+  const Lbl  = ({children,indent,secTop}) => <td className={`${indent?"td-lbl-i":"td-lbl"}${secTop?" sec-top":""}`}>{children}</td>;
+  const Num  = ({n,bold,faint,secTop}) => <td className={`td-num${secTop?" sec-top":""}${bold?" bold":""}${faint?" faint":""}`}>{(n!==null&&n!==undefined)?fmt(n):DASH}</td>;
+  const Rate = ({rate,secTop}) => <td className={`td-rate${secTop?" sec-top":""}`} style={{color:rate?"#333D4B":"#C4C9D0"}}>{rate||"—"}</td>;
+  const Note = ({children,rowSpan,secTop}) => <td rowSpan={rowSpan||1} className={`td-note${secTop?" sec-top":""}`}>{children||""}</td>;
+  const EN   = (props) => <EditableNum {...props} />;
 
   return (
-    <div style={{ background:"#fff", borderRadius:"20px", overflow:"hidden",
-      boxShadow:"0 2px 16px rgba(0,0,0,0.07)" }}>
+    <div style={{background:"#fff",borderRadius:"20px",overflow:"hidden",boxShadow:"0 2px 16px rgba(0,0,0,0.07)"}}>
       <table className="rtable">
         <colgroup>
-          <col style={{width:"9%"}} />
-          <col style={{width:"28%"}} />
-          <col style={{width:"13%"}} />
-          <col style={{width:"13%"}} />
-          <col style={{width:"14%"}} />
-          <col style={{width:"23%"}} />
+          <col style={{width:"9%"}}/><col style={{width:"28%"}}/>
+          <col style={{width:"13%"}}/><col style={{width:"13%"}}/>
+          <col style={{width:"14%"}}/><col style={{width:"23%"}}/>
         </colgroup>
         <thead>
           <tr>
@@ -422,176 +381,318 @@ function ReportTable({ data, onDataChange }) {
           </tr>
         </thead>
         <tbody>
-
-          {/* ── 요약 6행 ── */}
+          {/* 요약 6행 */}
           <tr>
             <Cat rowSpan={6}>요약</Cat>
             <Lbl>총 발송 건수</Lbl>
-            <Num n={calcTotalSent} bold /><Num faint /><Rate /><Note />
+            <Num n={calcTotalSent} bold/><Num faint/><Rate/><Note/>
           </tr>
           <tr>
             <Lbl>총 전송 성공 건수 (Delivery)</Lbl>
-            <EN value={delivered} bold onSave={v => update("delivered", v)} />
-            <EN value={null} onSave={() => {}} faint />
-            <Rate rate={data.deliveryRate
-              ? data.deliveryRate.toFixed(2)+"%"
-              : calcRate(delivered, calcTotalSent)} />
-            <Note />
+            <EN value={delivered} bold onSave={v=>update("delivered",v)}/>
+            <EN value={null} onSave={()=>{}} faint/>
+            <Rate rate={data.deliveryRate?data.deliveryRate.toFixed(2)+"%":calcRate(delivered,calcTotalSent)}/>
+            <Note/>
           </tr>
           <tr>
             <Lbl><strong>반송 (Bounces) 총 건수</strong></Lbl>
-            <EN value={data.bounces?.total} bold onSave={v => update("bounces.total", v)} />
-            <EN value={null} onSave={() => {}} faint />
-            <Rate rate={bounceRate} /><Note />
+            <EN value={data.bounces?.total} bold onSave={v=>update("bounces.total",v)}/>
+            <EN value={null} onSave={()=>{}} faint/>
+            <Rate rate={bounceRate}/><Note/>
           </tr>
           {[
-            {label:"하드 바운스",   path:"bounces.hard",  n:data.bounces?.hard,  rate:hardRate},
-            {label:"블록 바운스",   path:"bounces.block", n:data.bounces?.block, rate:blockRate},
-            {label:"소프트 바운스", path:"bounces.soft",  n:data.bounces?.soft,  rate:softRate},
+            {label:"하드 바운스",  path:"bounces.hard",  n:data.bounces?.hard,  rate:hardRate},
+            {label:"블록 바운스",  path:"bounces.block", n:data.bounces?.block, rate:blockRate},
+            {label:"소프트 바운스",path:"bounces.soft",  n:data.bounces?.soft,  rate:softRate},
           ].map(({label,path,n,rate},i)=>(
             <tr key={i}>
               <Lbl indent>{label}</Lbl>
-              <EN value={n} onSave={v => update(path, v)} />
-              <EN value={null} onSave={() => {}} faint />
-              <Rate rate={rate} /><Note />
+              <EN value={n} onSave={v=>update(path,v)}/>
+              <EN value={null} onSave={()=>{}} faint/>
+              <Rate rate={rate}/><Note/>
             </tr>
           ))}
 
-          {/* ── 활동 지표 4행 ── */}
+          {/* 활동 지표 4행 */}
           <tr>
             <Cat rowSpan={4} secTop>활동 지표</Cat>
             <Lbl secTop>오픈 (Opens)</Lbl>
-            <EN value={data.opens?.total} bold secTop onSave={v => update("opens.total", v)} />
-            <EN value={data.opens?.unique} secTop onSave={v => update("opens.unique", v)} />
-            <Rate rate={calcRate(data.opens?.unique, delivered)} secTop />
+            <EN value={data.opens?.total} bold secTop onSave={v=>update("opens.total",v)}/>
+            <EN value={data.opens?.unique} secTop onSave={v=>update("opens.unique",v)}/>
+            <Rate rate={calcRate(data.opens?.unique,delivered)} secTop/>
             <Note secTop>고유 발송 수 대비</Note>
           </tr>
           <tr>
             <Lbl>클릭 (Clicks)</Lbl>
-            <EN value={data.clicks?.total} bold onSave={v => update("clicks.total", v)} />
-            <EN value={data.clicks?.unique} onSave={v => update("clicks.unique", v)} />
-            <Rate rate={calcRate(data.clicks?.unique, uniqueOpens)} />
+            <EN value={data.clicks?.total} bold onSave={v=>update("clicks.total",v)}/>
+            <EN value={data.clicks?.unique} onSave={v=>update("clicks.unique",v)}/>
+            <Rate rate={calcRate(data.clicks?.unique,uniqueOpens)}/>
             <Note>고유 오픈 수 대비</Note>
           </tr>
           <tr>
             <Lbl>전환 (Conversions)</Lbl>
-            <EN value={null} onSave={() => {}} faint />
-            <EN value={data.conversions?.total} bold onSave={v => update("conversions.total", v)} />
-            <Rate rate={calcRate(data.conversions?.total, delivered, 3)} />
+            <EN value={null} onSave={()=>{}} faint/>
+            <EN value={data.conversions?.total} bold onSave={v=>update("conversions.total",v)}/>
+            <Rate rate={calcRate(data.conversions?.total,delivered,3)}/>
             <Note rowSpan={4}>고유 발송 수 대비</Note>
           </tr>
           <tr>
             <Lbl>구독 취소 (Unsubscribes)</Lbl>
-            <EN value={null} onSave={() => {}} faint />
-            <EN value={data.unsubscribes?.unique} bold onSave={v => update("unsubscribes.unique", v)} />
-            <Rate rate={calcRate(data.unsubscribes?.unique, delivered, 3)} />
+            <EN value={null} onSave={()=>{}} faint/>
+            <EN value={data.unsubscribes?.unique} bold onSave={v=>update("unsubscribes.unique",v)}/>
+            <Rate rate={calcRate(data.unsubscribes?.unique,delivered,3)}/>
           </tr>
 
-          {/* ── 미참여 2행 ── */}
+          {/* 미참여 2행 */}
           <tr>
             <Cat rowSpan={2} secTop>미참여</Cat>
             <Lbl secTop>오픈하지 않은 고객 (Did Not Open)</Lbl>
-            <EN value={data.didNotOpen} secTop onSave={v => update("didNotOpen", v)} />
-            <EN value={calcDidNotOpen} bold secTop onSave={v => {
-              // 고유 수 직접 수정 시 → opens.unique를 역산 (delivered - 입력값)
-              if (delivered != null && v != null) update("opens.unique", delivered - v);
-              else update("didNotOpen", v);
-            }} />
-            <Rate rate={calcRate(calcDidNotOpen, delivered)} secTop />
+            <EN value={data.didNotOpen} secTop onSave={v=>update("didNotOpen",v)}/>
+            <EN value={calcDidNotOpen} bold secTop onSave={v=>{
+              if(delivered!=null&&v!=null) update("opens.unique",delivered-v);
+              else update("didNotOpen",v);
+            }}/>
+            <Rate rate={calcRate(calcDidNotOpen,delivered)} secTop/>
           </tr>
           <tr>
             <Lbl>클릭하지 않은 고객 (Did Not Click)</Lbl>
-            <EN value={data.didNotClick} onSave={v => update("didNotClick", v)} />
-            <EN value={calcDidNotClick} bold onSave={v => {
-              // 고유 수 직접 수정 시 → clicks.unique를 역산 (delivered - 입력값)
-              if (delivered != null && v != null) update("clicks.unique", delivered - v);
-              else update("didNotClick", v);
-            }} />
-            <Rate rate={calcRate(calcDidNotClick, delivered)} />
+            <EN value={data.didNotClick} onSave={v=>update("didNotClick",v)}/>
+            <EN value={calcDidNotClick} bold onSave={v=>{
+              if(delivered!=null&&v!=null) update("clicks.unique",delivered-v);
+              else update("didNotClick",v);
+            }}/>
+            <Rate rate={calcRate(calcDidNotClick,delivered)}/>
           </tr>
-
         </tbody>
       </table>
     </div>
   );
 }
 
-/* ─────────────────────────── 앱 ─────────────────────────── */
+/* ─────────────────────── SlotCard ─────────────────────── */
+function SlotCard({ slot, onRemove, showRaw, onToggleRaw }) {
+  return (
+    <div className="slot-card">
+      {/* 썸네일 */}
+      <div className="slot-thumb">
+        <img src={slot.preview} alt="" />
+
+        {/* 로딩 오버레이 */}
+        {slot.status === 'loading' && (
+          <div style={{ position:"absolute", inset:0, background:"rgba(51,61,75,0.75)",
+            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"8px" }}>
+            <div className="spinner-sm" />
+            <span style={{ fontSize:"12px", color:"#fff", fontWeight:"700" }}>{slot.progress}%</span>
+          </div>
+        )}
+
+        {/* 완료 뱃지 */}
+        {slot.status === 'done' && (
+          <div style={{ position:"absolute", top:"8px", right:"8px",
+            background:"#22C55E", borderRadius:"50%", width:"22px", height:"22px",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            boxShadow:"0 2px 8px rgba(34,197,94,0.45)" }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+              stroke="white" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 6L9 17l-5-5"/>
+            </svg>
+          </div>
+        )}
+
+        {/* 에러 뱃지 */}
+        {slot.status === 'error' && (
+          <div style={{ position:"absolute", top:"8px", right:"8px",
+            background:"#EF4444", borderRadius:"50%", width:"22px", height:"22px",
+            display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+              stroke="white" strokeWidth="3.5" strokeLinecap="round">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </div>
+        )}
+
+        {/* 삭제 버튼 */}
+        {slot.status !== 'loading' && (
+          <button onClick={onRemove} title="제거"
+            style={{ position:"absolute", top:"8px", left:"8px",
+              background:"rgba(0,0,0,0.5)", border:"none", borderRadius:"50%",
+              width:"22px", height:"22px", cursor:"pointer", padding:0,
+              display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none"
+              stroke="white" strokeWidth="3.5" strokeLinecap="round">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* 상태 영역 */}
+      <div style={{ padding:"8px 12px", flex:1 }}>
+        {/* 진행률 바 */}
+        {slot.status === 'loading' && (
+          <>
+            <div style={{ fontSize:"11px", color:"#8B95A1", fontWeight:"600", marginBottom:"5px" }}>
+              {slot.progressMsg || '처리 중...'}
+            </div>
+            <div style={{ background:"#F2F4F6", borderRadius:"100px", height:"4px", overflow:"hidden" }}>
+              <div style={{ background:"#333D4B", height:"100%",
+                width:slot.progress+"%", transition:"width 0.3s", borderRadius:"100px" }} />
+            </div>
+          </>
+        )}
+        {slot.status === 'pending' && (
+          <div style={{ fontSize:"11px", color:"#C4C9D0", fontWeight:"600" }}>대기 중...</div>
+        )}
+        {slot.status === 'done' && (
+          <div style={{ fontSize:"11px", color:"#22C55E", fontWeight:"700" }}>✓ 인식 완료</div>
+        )}
+        {slot.status === 'error' && (
+          <div style={{ fontSize:"11px", color:"#EF4444", fontWeight:"700" }}>OCR 오류</div>
+        )}
+
+        {slot.status === 'done' && (
+          <button className="raw-toggle" onClick={onToggleRaw}>
+            {showRaw ? "원문 닫기" : "OCR 원문 확인"}
+          </button>
+        )}
+      </div>
+
+      {/* OCR 원문 */}
+      {showRaw && slot.rawText && (
+        <div className="raw-box">{slot.rawText}</div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────── App ─────────────────────── */
 function App() {
-  const [status,      setStatus]      = useState("idle");
-  const [progress,    setProgress]    = useState(0);
-  const [progressMsg, setProgressMsg] = useState("");
-  const [reportData,  setReportData]  = useState(null);   // OCR 파싱 원본
-  const [editData,    setEditData]    = useState(null);   // 사용자 편집본
-  const [rawOcrText,  setRawOcrText]  = useState("");
-  const [showRaw,     setShowRaw]     = useState(false);
-  const [errorMsg,    setErrorMsg]    = useState("");
+  const [slots,     setSlots]     = useState([]);
+  const [editData,  setEditData]  = useState(null);
+  const [showRawId, setShowRawId] = useState(null);
   const fileRef     = useRef();
   const dragCounter = useRef(0);
 
-  /* OCR 분석 */
-  async function analyze(file) {
-    if (!file || !file.type.startsWith("image/")) return;
-    setStatus("loading"); setProgress(0); setProgressMsg("OCR 엔진 초기화 중...");
-    setReportData(null); setEditData(null); setRawOcrText(""); setErrorMsg("");
+  // 항상 최신 slots를 참조하기 위한 ref (이벤트 핸들러 stale closure 방지)
+  const slotsRef = useRef(slots);
+  useEffect(() => { slotsRef.current = slots; }, [slots]);
 
+  const isProcessing = slots.some(s => s.status === 'loading' || s.status === 'pending');
+  const hasAnyDone   = slots.some(s => s.status === 'done');
+  const doneSlots    = slots.filter(s => s.status === 'done');
+  const doneCount    = doneSlots.length;
+  const canAddMore   = slots.length < MAX_SLOTS && !isProcessing;
+
+  /* 합산 데이터 자동 갱신 */
+  useEffect(() => {
+    const done = slots.filter(s => s.status === 'done' && s.parsed);
+    if (done.length > 0) {
+      setEditData(JSON.parse(JSON.stringify(mergeReports(done.map(s => s.parsed)))));
+    } else {
+      setEditData(null);
+    }
+  }, [slots]);
+
+  /* 슬롯 단일 업데이트 */
+  function updateSlot(id, updates) {
+    setSlots(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+  }
+
+  /* 슬롯 제거 */
+  function removeSlot(id) {
+    setSlots(prev => {
+      const slot = prev.find(s => s.id === id);
+      if (slot?.preview) URL.revokeObjectURL(slot.preview);
+      return prev.filter(s => s.id !== id);
+    });
+    if (showRawId === id) setShowRawId(null);
+  }
+
+  /* 초기화 */
+  function reset() {
+    setSlots(prev => {
+      prev.forEach(s => { if (s.preview) URL.revokeObjectURL(s.preview); });
+      return [];
+    });
+    setEditData(null);
+    setShowRawId(null);
+  }
+
+  /* OCR 처리 */
+  async function processSlot(id, file) {
+    updateSlot(id, { status: 'loading', progress: 0, progressMsg: 'OCR 엔진 초기화 중...' });
     try {
       const worker = await Tesseract.createWorker("eng+kor", 1, {
         logger: m => {
-          if (m.status === "recognizing text") {
-            setProgress(Math.round(m.progress * 100));
-            setProgressMsg("텍스트 인식 중...");
-          } else if (m.status === "loading language traineddata") {
-            setProgressMsg("언어 데이터 로딩 중...");
-          } else if (m.status === "initializing api") {
-            setProgressMsg("엔진 초기화 중...");
-          }
+          if (m.status === "recognizing text")
+            updateSlot(id, { progress: Math.round(m.progress * 100), progressMsg: '텍스트 인식 중...' });
+          else if (m.status === "loading language traineddata")
+            updateSlot(id, { progressMsg: '언어 데이터 로딩 중...' });
+          else if (m.status === "initializing api")
+            updateSlot(id, { progressMsg: '엔진 초기화 중...' });
         },
       });
-
       const { data: { text } } = await worker.recognize(file);
       await worker.terminate();
-
-      setRawOcrText(text);
       const parsed = parseReport(text);
-      setReportData(parsed);
-      setEditData(JSON.parse(JSON.stringify(parsed)));
-      setStatus("done");
+      updateSlot(id, { status: 'done', rawText: text, parsed, progress: 100, progressMsg: '' });
     } catch(err) {
-      setErrorMsg("OCR 처리 중 오류: " + err.message);
-      setStatus("error");
+      updateSlot(id, { status: 'error', error: err.message, progressMsg: '' });
     }
   }
 
-  /* 전역 드래그 앤 드롭 + Ctrl+V */
+  /* 파일 추가 & 처리 */
+  async function addFiles(fileList) {
+    const current = slotsRef.current;
+    // 처리 중이면 무시
+    if (current.some(s => s.status === 'loading' || s.status === 'pending')) return;
+
+    const available = MAX_SLOTS - current.length;
+    if (available <= 0) return;
+
+    const toAdd = Array.from(fileList)
+      .filter(f => f.type.startsWith('image/'))
+      .slice(0, available);
+    if (toAdd.length === 0) return;
+
+    const newSlots = toAdd.map(file => ({
+      id: Date.now() + Math.random(),
+      file,
+      preview: URL.createObjectURL(file),
+      status: 'pending',
+      rawText: '', parsed: null, error: '',
+      progress: 0, progressMsg: '',
+    }));
+
+    setSlots(prev => [...prev, ...newSlots]);
+
+    // 순차 처리
+    for (const slot of newSlots) {
+      await processSlot(slot.id, slot.file);
+    }
+  }
+
+  /* 이벤트 핸들러용 ref */
+  const addFilesRef = useRef(addFiles);
+  useEffect(() => { addFilesRef.current = addFiles; });
+
+  /* 전역 드래그 & 붙여넣기 */
   useEffect(() => {
     const overlay = document.getElementById("drag-overlay");
-
-    const onEnter = e => {
-      e.preventDefault();
-      dragCounter.current++;
-      if (dragCounter.current === 1) overlay.classList.add("show");
-    };
-    const onLeave = () => {
-      dragCounter.current = Math.max(0, dragCounter.current - 1);
-      if (dragCounter.current === 0) overlay.classList.remove("show");
-    };
+    const onEnter = e => { e.preventDefault(); dragCounter.current++; if(dragCounter.current===1) overlay.classList.add("show"); };
+    const onLeave = ()  => { dragCounter.current=Math.max(0,dragCounter.current-1); if(dragCounter.current===0) overlay.classList.remove("show"); };
     const onOver  = e => e.preventDefault();
     const onDrop  = e => {
-      e.preventDefault();
-      dragCounter.current = 0;
-      overlay.classList.remove("show");
-      const file = e.dataTransfer.files?.[0];
-      if (file) analyze(file);
+      e.preventDefault(); dragCounter.current=0; overlay.classList.remove("show");
+      if (e.dataTransfer.files?.length) addFilesRef.current(e.dataTransfer.files);
     };
     const onPaste = e => {
       const items = e.clipboardData?.items;
       if (!items) return;
-      for (const item of items) {
-        if (item.type.startsWith("image/")) { analyze(item.getAsFile()); break; }
-      }
+      const imgs = [];
+      for (const item of items) { if (item.type.startsWith("image/")) imgs.push(item.getAsFile()); }
+      if (imgs.length) addFilesRef.current(imgs);
     };
-
     document.addEventListener("dragenter", onEnter);
     document.addEventListener("dragleave", onLeave);
     document.addEventListener("dragover",  onOver);
@@ -606,179 +707,181 @@ function App() {
     };
   }, []);
 
-  function reset() {
-    setStatus("idle"); setReportData(null); setEditData(null);
-    setRawOcrText(""); setShowRaw(false); setErrorMsg(""); setProgress(0);
-  }
-
-  function refreshData() {
-    if (reportData) setEditData(JSON.parse(JSON.stringify(reportData)));
-  }
-
+  /* 엑셀 다운로드 */
   function downloadExcel() {
+    if (!editData) return;
     const d = editData;
     const delivered    = d.delivered ?? d.totalSent;
     const uniqueOpens  = d.opens?.unique;
     const uniqueClicks = d.clicks?.unique;
-    const calcTotalSent   = (delivered != null && d.bounces?.total != null) ? delivered + d.bounces.total : d.totalSent;
-    const calcDidNotOpen  = (delivered != null && uniqueOpens  != null) ? delivered - uniqueOpens  : d.didNotOpen;
-    const calcDidNotClick = (delivered != null && uniqueClicks != null) ? delivered - uniqueClicks : d.didNotClick;
+    const calcTotalSent   = (delivered!=null && d.bounces?.total!=null) ? delivered+d.bounces.total : d.totalSent;
+    const calcDidNotOpen  = (delivered!=null && uniqueOpens!=null)  ? delivered-uniqueOpens  : d.didNotOpen;
+    const calcDidNotClick = (delivered!=null && uniqueClicks!=null) ? delivered-uniqueClicks : d.didNotClick;
     const r = (n, den, dec=2) => (n!=null&&den) ? +((n/den)*100).toFixed(dec) : null;
 
     const rows = [
       ["분류","항목","전체 수","고유 수","비율(%)","비고"],
       ["요약","총 발송 건수",          calcTotalSent,          null, null, null],
-      ["요약","총 전송 성공 건수",      delivered,              null, r(delivered, calcTotalSent), null],
-      ["요약","반송 총 건수",           d.bounces?.total??null, null, r(d.bounces?.total, calcTotalSent), null],
-      ["요약","  하드 바운스",          d.bounces?.hard??null,  null, r(d.bounces?.hard,  d.bounces?.total), null],
-      ["요약","  블록 바운스",          d.bounces?.block??null, null, r(d.bounces?.block, d.bounces?.total), null],
-      ["요약","  소프트 바운스",        d.bounces?.soft??null,  null, r(d.bounces?.soft,  d.bounces?.total), null],
-      ["활동 지표","오픈 (Opens)",       d.opens?.total??null,   uniqueOpens??null,  r(uniqueOpens, delivered), "고유 발송 수 대비"],
-      ["활동 지표","클릭 (Clicks)",      d.clicks?.total??null,  d.clicks?.unique??null, r(d.clicks?.unique, uniqueOpens), "고유 오픈 수 대비"],
-      ["활동 지표","전환 (Conversions)", null, d.conversions?.total??null, r(d.conversions?.total, delivered, 3), "고유 발송 수 대비"],
-      ["활동 지표","구독 취소 (Unsubscribes)", null, d.unsubscribes?.unique??null, r(d.unsubscribes?.unique, delivered, 3), "고유 발송 수 대비"],
-      ["미참여","오픈하지 않은 고객",   null, calcDidNotOpen??null,  r(calcDidNotOpen,  delivered), "고유 발송 수 대비"],
-      ["미참여","클릭하지 않은 고객",   null, calcDidNotClick??null, r(calcDidNotClick, delivered), "고유 발송 수 대비"],
+      ["요약","총 전송 성공 건수",      delivered,              null, r(delivered,calcTotalSent), null],
+      ["요약","반송 총 건수",           d.bounces?.total??null, null, r(d.bounces?.total,calcTotalSent), null],
+      ["요약","  하드 바운스",          d.bounces?.hard??null,  null, r(d.bounces?.hard,d.bounces?.total), null],
+      ["요약","  블록 바운스",          d.bounces?.block??null, null, r(d.bounces?.block,d.bounces?.total), null],
+      ["요약","  소프트 바운스",        d.bounces?.soft??null,  null, r(d.bounces?.soft,d.bounces?.total), null],
+      ["활동 지표","오픈 (Opens)",       d.opens?.total??null,   uniqueOpens??null,  r(uniqueOpens,delivered), "고유 발송 수 대비"],
+      ["활동 지표","클릭 (Clicks)",      d.clicks?.total??null,  d.clicks?.unique??null, r(d.clicks?.unique,uniqueOpens), "고유 오픈 수 대비"],
+      ["활동 지표","전환 (Conversions)", null, d.conversions?.total??null, r(d.conversions?.total,delivered,3), "고유 발송 수 대비"],
+      ["활동 지표","구독 취소",          null, d.unsubscribes?.unique??null, r(d.unsubscribes?.unique,delivered,3), "고유 발송 수 대비"],
+      ["미참여","오픈하지 않은 고객",    null, calcDidNotOpen??null,  r(calcDidNotOpen,delivered), ""],
+      ["미참여","클릭하지 않은 고객",    null, calcDidNotClick??null, r(calcDidNotClick,delivered), ""],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
-
-    // 열 너비
-    ws["!cols"] = [
-      {wch:12},{wch:32},{wch:14},{wch:14},{wch:12},{wch:18}
-    ];
-
-    // 헤더 스타일 (배경 + 볼드)
-    const headerStyle = { font:{bold:true}, fill:{fgColor:{rgb:"333D4B"}}, alignment:{horizontal:"center"} };
-    ["A1","B1","C1","D1","E1","F1"].forEach(c => {
-      if (ws[c]) ws[c].s = headerStyle;
-    });
-
+    ws["!cols"] = [{wch:12},{wch:32},{wch:14},{wch:14},{wch:12},{wch:18}];
     const wb = XLSX.utils.book_new();
-    const title = koreanDate ? `성과 리포트 (${koreanDate})` : "이메일 성과 리포트";
+    const title = doneCount > 1 ? `통합 성과 리포트 (${doneCount}장 합산)` : "이메일 성과 리포트";
     XLSX.utils.book_append_sheet(wb, ws, "성과 리포트");
     XLSX.writeFile(wb, `${title}.xlsx`);
   }
 
-  const koreanDate  = editData?.publishedOn ? toKoreanDate(editData.publishedOn) : null;
-  const reportTitle = koreanDate ? `성과 분석 리포트 (${koreanDate})` : "성과 분석 리포트";
+  /* 리포트 제목 */
+  const reportTitle = (() => {
+    if (doneCount > 1) return `통합 성과 분석 리포트 (이미지 ${doneCount}장 합산)`;
+    if (doneCount === 1) {
+      const d = toKoreanDate(doneSlots[0].parsed?.publishedOn);
+      return d ? `성과 분석 리포트 (${d})` : "성과 분석 리포트";
+    }
+    return "성과 분석 리포트";
+  })();
+
+  /* 빈 자리 수 계산 */
+  const emptyCount = MAX_SLOTS - slots.length - (canAddMore ? 1 : 0);
 
   return (
     <div style={{ minHeight:"100vh", background:"#F2F4F6", padding:"2.5rem 1.5rem" }}>
       <div style={{ maxWidth:"900px", margin:"0 auto" }}>
 
-        {/* ── 초기 / 에러 ── */}
-        {(status === "idle" || status === "error") && (
+        {/* ── 초기 상태 ── */}
+        {slots.length === 0 && (
           <>
             <div className="upload-card" onClick={() => fileRef.current?.click()}
               style={{ padding:"4.5rem 2rem", textAlign:"center", userSelect:"none" }}>
-              <div style={{ width:"60px", height:"60px", background:"#F2F4F6",
-                borderRadius:"18px", display:"flex", alignItems:"center",
-                justifyContent:"center", margin:"0 auto 22px" }}>
+              <div style={{ width:"60px", height:"60px", background:"#F2F4F6", borderRadius:"18px",
+                display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 22px" }}>
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                   stroke="#333D4B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
                 </svg>
               </div>
-              <p style={{ fontSize:"22px", fontWeight:"800", color:"#333D4B",
-                margin:"0 0 10px", letterSpacing:"-0.03em" }}>
+              <p style={{ fontSize:"22px", fontWeight:"800", color:"#333D4B", margin:"0 0 10px", letterSpacing:"-0.03em" }}>
                 어떤 리포트를 분석해 드릴까요?
               </p>
               <p style={{ fontSize:"15px", color:"#8B95A1", margin:"0 0 22px", lineHeight:1.7 }}>
-                리포트 이미지를 이 창에 가져와 보세요
+                리포트 이미지를 이 창에 가져와 보세요 <strong style={{color:"#333D4B"}}>(최대 3장, 수치 자동 합산)</strong>
               </p>
               <span style={{ display:"inline-block", background:"#F2F4F6",
                 borderRadius:"100px", padding:"8px 20px", fontSize:"12px", color:"#B8BFC8" }}>
                 파일 선택, 드래그, 또는 복사해서 붙여넣기 (Ctrl+V)
               </span>
-              <input ref={fileRef} type="file" accept="image/*"
-                style={{display:"none"}} onChange={e => analyze(e.target.files[0])} />
             </div>
-
-            {status === "error" && (
-              <div style={{ marginTop:"12px", padding:"12px 16px",
-                background:"#FEF2F2", border:"1px solid #FECACA",
-                borderRadius:"12px", color:"#B91C1C", fontSize:"13px" }}>
-                {errorMsg}
-              </div>
-            )}
-
             <p style={{ textAlign:"center", marginTop:"16px", fontSize:"12px", color:"#C4C9D0" }}>
               🔒 모든 처리는 브라우저 로컬에서만 이루어집니다. 이미지가 외부로 전송되지 않습니다.
             </p>
           </>
         )}
 
-        {/* ── 로딩 ── */}
-        {status === "loading" && (
-          <div style={{ textAlign:"center", padding:"6rem 2rem" }}>
-            <div className="spinner" />
-            <p style={{ fontSize:"14px", color:"#8B95A1", margin:"0 0 4px", fontWeight:"600" }}>
-              {progressMsg}
-            </p>
-            <p style={{ fontSize:"12px", color:"#C4C9D0", margin:0 }}>
-              처음 실행 시 언어 데이터를 다운로드합니다 (약 10~30초)
-            </p>
-            <div className="progress-bar-bg">
-              <div className="progress-bar-fill" style={{ width: progress + "%" }} />
-            </div>
-            <p style={{ fontSize:"12px", color:"#B8BFC8", marginTop:"6px" }}>{progress}%</p>
-          </div>
-        )}
-
-        {/* ── 결과 ── */}
-        {status === "done" && editData && (
-          <div>
-            <div style={{ display:"flex", alignItems:"center",
-              justifyContent:"space-between", marginBottom:"14px" }}>
-              <p style={{ margin:0, fontSize:"13px", fontWeight:"700",
-                color:"#333D4B", letterSpacing:"0.01em" }}>
-                {reportTitle}
+        {/* ── 슬롯 있을 때 ── */}
+        {slots.length > 0 && (
+          <>
+            {/* 헤더 */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"16px" }}>
+              <p style={{ margin:0, fontSize:"13px", fontWeight:"700", color:"#333D4B" }}>
+                {hasAnyDone ? reportTitle : isProcessing ? "이미지 분석 중..." : "이미지를 추가해 주세요"}
               </p>
               <div style={{ display:"flex", gap:"8px" }}>
-                <button className="retry-btn" onClick={downloadExcel}
-                  style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
-                  </svg>
-                  엑셀 다운로드
-                </button>
-                <button className="retry-btn" onClick={refreshData}
-                  title="OCR 인식 원본값으로 되돌립니다"
-                  style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                    <path d="M3 3v5h5"/>
-                  </svg>
-                  OCR 원본으로 초기화
-                </button>
-                <button className="retry-btn" onClick={reset}>
-                  다른 리포트 분석하기
-                </button>
+                {hasAnyDone && (
+                  <button className="retry-btn" onClick={downloadExcel}
+                    style={{ display:"flex", alignItems:"center", gap:"5px" }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    엑셀 다운로드
+                  </button>
+                )}
+                <button className="retry-btn" onClick={reset}>처음으로</button>
               </div>
             </div>
 
-            <ReportTable data={editData} onDataChange={setEditData} />
+            {/* 이미지 슬롯 행 */}
+            <div style={{ display:"flex", gap:"12px", marginBottom:"22px" }}>
+              {slots.map(slot => (
+                <SlotCard
+                  key={slot.id}
+                  slot={slot}
+                  onRemove={() => removeSlot(slot.id)}
+                  showRaw={showRawId === slot.id}
+                  onToggleRaw={() => setShowRawId(showRawId === slot.id ? null : slot.id)}
+                />
+              ))}
 
-            <div style={{ marginTop:"8px", textAlign:"right", paddingRight:"4px" }}>
-              <span style={{ fontSize:"11px", color:"#C4C9D0" }}>
-                숫자 셀에 커서를 올려 클릭하면 직접 수정할 수 있습니다
-              </span>
+              {/* 이미지 추가 카드 */}
+              {canAddMore && (
+                <div className="add-slot-card" onClick={() => fileRef.current?.click()}>
+                  <div style={{ width:"36px", height:"36px", background:"#EBEBEB", borderRadius:"10px",
+                    display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                  </div>
+                  <span style={{ fontSize:"12px", fontWeight:"700" }}>
+                    이미지 추가 ({slots.length}/{MAX_SLOTS})
+                  </span>
+                </div>
+              )}
+
+              {/* 빈 자리 표시 */}
+              {Array.from({ length: Math.max(0, emptyCount) }).map((_, i) => (
+                <div key={i} className="empty-slot" />
+              ))}
             </div>
 
-            {/* OCR 원문 확인 (디버깅용) */}
-            <div style={{ textAlign:"center", marginTop:"8px" }}>
-              <button className="raw-toggle" onClick={() => setShowRaw(v=>!v)}>
-                {showRaw ? "OCR 원문 닫기" : "OCR 원문 확인 (값이 이상할 때 참고)"}
-              </button>
-              {showRaw && <div className="raw-box">{rawOcrText}</div>}
-            </div>
-          </div>
+            {/* 합산 배지 */}
+            {doneCount > 1 && (
+              <div style={{ textAlign:"center" }}>
+                <span className="sum-badge">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
+                  이미지 {doneCount}장의 수치를 합산한 결과입니다
+                </span>
+              </div>
+            )}
+
+            {/* 테이블 */}
+            {hasAnyDone && editData && (
+              <>
+                <ReportTable data={editData} onDataChange={setEditData} />
+                <div style={{ marginTop:"8px", display:"flex", justifyContent:"space-between", alignItems:"center", paddingRight:"4px" }}>
+                  <span style={{ fontSize:"11px", color:"#C4C9D0" }}>
+                    숫자 셀에 커서를 올려 클릭하면 직접 수정할 수 있습니다
+                  </span>
+                  {isProcessing && (
+                    <span style={{ fontSize:"11px", color:"#8B95A1", fontWeight:"600" }}>
+                      ⏳ 나머지 이미지 분석 중... 완료 시 자동 반영됩니다
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+          </>
         )}
+
+        <input ref={fileRef} type="file" accept="image/*" multiple style={{ display:"none" }}
+          onChange={e => { if (e.target.files?.length) addFiles(e.target.files); e.target.value=''; }} />
 
       </div>
     </div>
