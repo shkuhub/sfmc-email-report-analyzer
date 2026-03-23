@@ -179,6 +179,7 @@ function mergeReports(reports) {
     },
     didNotOpen:  sumNull(...reports.map(r => r.didNotOpen)),
     didNotClick: sumNull(...reports.map(r => r.didNotClick)),
+    conversionAmount: sumNull(...reports.map(r => r.conversionAmount)),
   };
 }
 
@@ -284,6 +285,7 @@ function parseReport(rawText) {
     conversions:  { total: convTotal,  unique: convUnique },
     unsubscribes: { total: unsubTotal, unique: unsubUnique },
     didNotOpen, didNotClick,
+    conversionAmount: null,
   };
 }
 
@@ -349,6 +351,62 @@ function EditableNum({ value, onSave, bold, faint, secTop }) {
   );
 }
 
+/* ─────────────────────── EditableConvNote ─────────────────────── */
+function EditableConvNote({ value, onSave }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft,   setDraft]   = React.useState("");
+  const inputRef = useRef();
+
+  function startEdit() {
+    setDraft(value !== null && value !== undefined ? String(value) : "");
+    setEditing(true);
+  }
+  React.useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
+  function commit() {
+    const raw = draft.replace(/,/g,"").replace(/\s/g,"").replace(/₩/g,"");
+    const n = parseInt(raw, 10);
+    onSave(isNaN(n) ? null : n);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <td className="td-note td-editable" style={{verticalAlign:"middle"}}>
+        <div style={{fontSize:"12px", color:"#8B95A1", marginBottom:"5px"}}>고유 발송 수 대비</div>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"center", gap:"2px"}}>
+          <span style={{fontSize:"12px", color:"#8B95A1", fontWeight:"700", flexShrink:0}}>₩</span>
+          <input
+            ref={inputRef}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => { if(e.key==="Enter") commit(); if(e.key==="Escape") setEditing(false); }}
+            style={{
+              width:"88px", border:"none", borderBottom:"2px solid #333D4B",
+              outline:"none", background:"transparent", fontFamily:"inherit",
+              fontSize:"12px", textAlign:"center",
+              fontVariantNumeric:"tabular-nums", color:"#333D4B"
+            }}
+          />
+        </div>
+      </td>
+    );
+  }
+
+  return (
+    <td className="td-note td-editable" onClick={startEdit} style={{verticalAlign:"middle"}}>
+      <div style={{fontSize:"12px", color:"#8B95A1", marginBottom:"5px"}}>고유 발송 수 대비</div>
+      <div style={{
+        fontSize:"12px",
+        fontWeight: value != null ? "700" : "400",
+        color: value != null ? "#333D4B" : "#C4C9D0"
+      }}>
+        {value != null ? `₩ ${fmt(value)}` : "₩ —"}
+      </div>
+    </td>
+  );
+}
+
 /* ─────────────────────── ReportTable ─────────────────────── */
 const DASH = <span className="faint">—</span>;
 
@@ -406,7 +464,7 @@ function ReportTable({ data, onDataChange }) {
             <Lbl>총 전송 성공 건수 (Delivery)</Lbl>
             <EN value={delivered} bold onSave={v=>update("delivered",v)}/>
             <EN value={null} onSave={()=>{}} faint/>
-            <Rate rate={data.deliveryRate?data.deliveryRate.toFixed(3)+"%":calcRate(delivered,calcTotalSent,3)}/>
+            <Rate rate={data.deliveryRate?data.deliveryRate.toFixed(2)+"%":calcRate(delivered,calcTotalSent)}/>
             <Note/>
           </tr>
           <tr>
@@ -448,14 +506,15 @@ function ReportTable({ data, onDataChange }) {
             <Lbl>전환 (Conversions)</Lbl>
             <EN value={null} onSave={()=>{}} faint/>
             <EN value={data.conversions?.unique ?? data.conversions?.total} bold onSave={v=>update("conversions.unique",v)}/>
-            <Rate rate={calcRate(data.conversions?.unique??data.conversions?.total,delivered,3)}/>
-            <Note rowSpan={2}>고유 발송 수 대비</Note>
+            <Rate rate={calcRate(data.conversions?.unique??data.conversions?.total,delivered)}/>
+            <EditableConvNote value={data.conversionAmount} onSave={v=>update("conversionAmount",v)}/>
           </tr>
           <tr>
             <Lbl>구독 취소 (Unsubscribes)</Lbl>
             <EN value={null} onSave={()=>{}} faint/>
             <EN value={data.unsubscribes?.unique} bold onSave={v=>update("unsubscribes.unique",v)}/>
-            <Rate rate={calcRate(data.unsubscribes?.unique,delivered,3)}/>
+            <Rate rate={calcRate(data.unsubscribes?.unique,delivered)}/>
+            <Note rowSpan={3}>고유 발송 수 대비</Note>
           </tr>
 
           {/* 미참여 2행 */}
@@ -677,7 +736,7 @@ function App() {
       ["요약","  소프트 바운스",        d.bounces?.soft??null,  null, r(d.bounces?.soft,d.bounces?.total), null],
       ["활동 지표","오픈 (Opens)",       d.opens?.total??null,   uniqueOpens??null,  r(uniqueOpens,delivered), "고유 발송 수 대비"],
       ["활동 지표","클릭 (Clicks)",      d.clicks?.total??null,  d.clicks?.unique??null, r(d.clicks?.unique,uniqueOpens), "고유 오픈 수 대비"],
-      ["활동 지표","전환 (Conversions)", null, d.conversions?.unique??d.conversions?.total??null, r(d.conversions?.unique??d.conversions?.total,delivered,3), "고유 발송 수 대비"],
+      ["활동 지표","전환 (Conversions)", null, d.conversions?.unique??d.conversions?.total??null, r(d.conversions?.unique??d.conversions?.total,delivered,3), d.conversionAmount!=null ? `₩${d.conversionAmount.toLocaleString("ko-KR")}` : "고유 발송 수 대비"],
       ["활동 지표","구독 취소",          null, d.unsubscribes?.unique??null, r(d.unsubscribes?.unique,delivered,3), "고유 발송 수 대비"],
       ["미참여","오픈하지 않은 고객",    null, calcDidNotOpen??null,  r(calcDidNotOpen,delivered), ""],
       ["미참여","클릭하지 않은 고객",    null, calcDidNotClick??null, r(calcDidNotClick,delivered), ""],
