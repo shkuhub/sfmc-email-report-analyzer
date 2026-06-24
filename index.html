@@ -444,6 +444,38 @@ function isResultCodeNonZero(value) {
   return !/^0+$/.test(String(normalized));
 }
 
+function normalizeFallbackSMSDate(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const digits = raw.replace(/[^0-9]/g, '');
+  if (digits.length >= 8) return digits.slice(0, 8);
+
+  const dash = raw.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (dash) {
+    return `${dash[1]}${String(dash[2]).padStart(2,'0')}${String(dash[3]).padStart(2,'0')}`;
+  }
+
+  return raw;
+}
+
+function getFallbackSMSDate(row) {
+  return normalizeFallbackSMSDate(row.req_dt || row.comp_dt || row.date || row.send_date) || '-';
+}
+
+function isTokenIncluded(text, token) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|[_\\s\\-])${escaped}([_\\s\\-]|$)`, 'i');
+  return re.test(String(text || ''));
+}
+
+function getFallbackSMSBrand(activity) {
+  const name = String(activity || '');
+  // 기존 카카오톡 탭의 구분 방식과 맞춰 SO/SS는 쌤소나이트로 처리
+  if (isTokenIncluded(name, 'SS') || isTokenIncluded(name, 'SO')) return 'SS';
+  if (isTokenIncluded(name, 'AT')) return 'AT';
+  return 'OTHER';
+}
+
 function parseFallbackSMSCSV(text) {
   const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
   const lines = normalized.split('\n').filter(line => line.trim() !== '');
@@ -465,6 +497,8 @@ function parseFallbackSMSCSV(text) {
       row[h] = values[i] !== undefined ? String(values[i]).trim() : '';
     });
     row._fallbackSuccess = isResultCodeNonZero(row.channel1_f_code) && isResultCodeZero(row.channel2_f_code);
+    row._fallbackDate = getFallbackSMSDate(row);
+    row._fallbackBrand = getFallbackSMSBrand(row.activity_name);
     return row;
   }).filter(row => row.activity_name);
 
@@ -473,29 +507,41 @@ function parseFallbackSMSCSV(text) {
   }
 
   const activities = [...new Set(data.map(d => d.activity_name))].sort((a,b)=>a.localeCompare(b, 'ko'));
-  return { type: 'FALLBACK_SMS_CSV', data, activities };
+  const activitiesSS = activities.filter(activity => getFallbackSMSBrand(activity) === 'SS');
+  const activitiesAT = activities.filter(activity => getFallbackSMSBrand(activity) === 'AT');
+  const activitiesOther = activities.filter(activity => getFallbackSMSBrand(activity) === 'OTHER');
+
+  return { type: 'FALLBACK_SMS_CSV', data, activities, activitiesSS, activitiesAT, activitiesOther };
 }
 
-function aggregateFallbackSMSRows(data, selectedActivities) {
+function aggregateFallbackSMSRowsByDate(data, selectedActivities) {
   const selectedSet = new Set(selectedActivities);
-  const rows = selectedActivities.map(activity => {
-    const matched = data.filter(row => row.activity_name === activity);
-    const success = matched.filter(row => row._fallbackSuccess).length;
-    return {
-      activity,
-      total: matched.length,
-      success,
-      rate: matched.length > 0 ? ((success / matched.length) * 100).toFixed(2) + '%' : '0.00%',
-    };
-  }).filter(row => selectedSet.has(row.activity));
+  const groupMap = new Map();
+
+  data.forEach(row => {
+    if (!selectedSet.has(row.activity_name)) return;
+    const activity = row.activity_name;
+    const date = row._fallbackDate || getFallbackSMSDate(row) || '-';
+    const key = `${activity}||${date}`;
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { activity, date, success: 0 });
+    }
+    if (row._fallbackSuccess) {
+      groupMap.get(key).success += 1;
+    }
+  });
+
+  const rows = Array.from(groupMap.values()).sort((a,b) => {
+    const activityCompare = a.activity.localeCompare(b.activity, 'ko');
+    if (activityCompare !== 0) return activityCompare;
+    return String(b.date).localeCompare(String(a.date));
+  });
 
   const totals = rows.reduce((acc, row) => {
-    acc.total += row.total;
     acc.success += row.success;
     return acc;
-  }, { total: 0, success: 0 });
+  }, { success: 0 });
 
-  totals.rate = totals.total > 0 ? ((totals.success / totals.total) * 100).toFixed(2) + '%' : '0.00%';
   return { rows, totals };
 }
 
@@ -1417,32 +1463,34 @@ function KakaoExternalReport({ id, title, onContextMenu, multiInput=false }) {
 }
 
 
-function FallbackSMSTable({ data, activities, selectedActivities, onActivityToggle, onSelectAll, onResetActivities }) {
+function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, selectedActivities, onActivityToggle, onSelectAll, onResetActivities }) {
   const [searchText, setSearchText] = useState("");
   const visibleActivities = activities.filter(activity =>
     activity.toLowerCase().includes(searchText.trim().toLowerCase())
   );
 
-  const { rows, totals } = aggregateFallbackSMSRows(data, selectedActivities);
+  const brandData = data.filter(row => row._fallbackBrand === brandKey);
+  const { rows, totals } = aggregateFallbackSMSRowsByDate(brandData, selectedActivities);
+  const tableId = `fallback-sms-table-${brandKey.toLowerCase()}`;
 
   const copyTotalSuccess = () => {
-    writeClipboardText(String(totals.success || 0), "대체문자 성공 합계가 복사되었습니다.");
+    writeClipboardText(String(totals.success || 0), `${brandLabel} 대체문자 성공 합계가 복사되었습니다.`);
   };
 
   const copyTable = () => {
     if (rows.length === 0) { alert("복사할 데이터가 없습니다."); return; }
     const lines = [
-      ["Activity Name", "대체문자 성공 수"].join("\t"),
-      ...rows.map(row => [row.activity, row.success].join("\t")),
-      ["전체 합계", totals.success].join("\t"),
+      ["Activity Name", "일자", "대체문자 성공 수"].join("\t"),
+      ...rows.map(row => [row.activity, row.date, row.success].join("\t")),
+      ["전체 합계", "", totals.success].join("\t"),
     ];
-    writeClipboardText(lines.join("\n"), "대체문자 결과 표가 복사되었습니다.");
+    writeClipboardText(lines.join("\n"), `${brandLabel} 대체문자 결과 표가 복사되었습니다.`);
   };
 
   return (
     <div style={{background:"#fff",padding:"24px",borderRadius:"20px",boxShadow:"0 2px 16px rgba(0,0,0,0.07)",marginBottom:"24px"}}>
       <div className="summary-header">
-        <h3 className="summary-title">대체문자 성공 건수 분석 결과</h3>
+        <h3 className="summary-title">{title}</h3>
         <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
           <button className="copy-btn" onClick={copyTotalSuccess}>성공 합계 복사</button>
           <button className="copy-btn" onClick={copyTable}>표 복사</button>
@@ -1482,37 +1530,40 @@ function FallbackSMSTable({ data, activities, selectedActivities, onActivityTogg
           </div>
         ))}
         {visibleActivities.length === 0 && (
-          <div style={{fontSize:"12px",color:"#8B95A1",padding:"8px"}}>검색 결과가 없습니다.</div>
+          <div style={{fontSize:"12px",color:"#8B95A1",padding:"8px"}}>선택 가능한 Activity가 없습니다.</div>
         )}
       </div>
 
       <div style={{fontSize:"11px",color:"#8B95A1",lineHeight:1.6,marginBottom:"14px"}}>
         산정 조건: <strong>channel1_f_code ≠ 0</strong> AND <strong>channel2_f_code = 0</strong>. 
-        0, 00, 000은 모두 성공 코드 0으로 처리합니다.
+        0, 00, 000은 모두 성공 코드 0으로 처리합니다. 일자는 <strong>req_dt</strong> 기준이며, 값이 없으면 <strong>comp_dt</strong>를 사용합니다.
       </div>
 
-      <table className="stable" id="fallback-sms-table">
+      <table className="stable" id={tableId}>
         <thead>
           <tr>
             <th>Activity Name</th>
+            <th>일자</th>
             <th>대체문자 성공 수</th>
           </tr>
         </thead>
         <tbody>
           {rows.map(row=>(
-            <tr key={row.activity}>
+            <tr key={`${row.activity}-${row.date}`}>
               <td className="bg-light" style={{textAlign:"left",whiteSpace:"normal",wordBreak:"break-word"}}>{row.activity}</td>
+              <td>{row.date}</td>
               <td style={{fontWeight:"800",color:"#4F46E5"}}>{fmt(row.success)}</td>
             </tr>
           ))}
           {rows.length>0 ? (
             <tr className="bg-total">
               <td className="bg-total">전체 합계</td>
+              <td className="bg-total"></td>
               <td className="bg-total">{fmt(totals.success)}</td>
             </tr>
           ) : (
             <tr>
-              <td colSpan="2" style={{padding:"28px",fontSize:"13px",color:"#8B95A1",textAlign:"center"}}>
+              <td colSpan="3" style={{padding:"28px",fontSize:"13px",color:"#8B95A1",textAlign:"center"}}>
                 Activity를 선택해주세요.
               </td>
             </tr>
@@ -1600,8 +1651,10 @@ function App() {
 
   // 대체문자 CSV 상태
   const [fallbackData, setFallbackData] = useState(null);
-  const [fallbackActivities, setFallbackActivities] = useState([]);
-  const [selectedFallbackActivities, setSelectedFallbackActivities] = useState([]);
+  const [fallbackActivitiesSS, setFallbackActivitiesSS] = useState([]);
+  const [fallbackActivitiesAT, setFallbackActivitiesAT] = useState([]);
+  const [selectedFallbackActivitiesSS, setSelectedFallbackActivitiesSS] = useState([]);
+  const [selectedFallbackActivitiesAT, setSelectedFallbackActivitiesAT] = useState([]);
   const [fallbackInput, setFallbackInput] = useState("");
   const [fallbackDrag, setFallbackDrag] = useState(false);
 
@@ -1686,9 +1739,13 @@ function App() {
       alert(parsed?.error || "올바른 CSV 형식이 아닙니다.");
       return;
     }
+    const ssActivities = parsed.activitiesSS || [];
+    const atActivities = parsed.activitiesAT || [];
     setFallbackData(parsed);
-    setFallbackActivities(parsed.activities);
-    setSelectedFallbackActivities(parsed.activities.length > 0 ? [parsed.activities[0]] : []);
+    setFallbackActivitiesSS(ssActivities);
+    setFallbackActivitiesAT(atActivities);
+    setSelectedFallbackActivitiesSS(ssActivities.length > 0 ? [ssActivities[0]] : []);
+    setSelectedFallbackActivitiesAT(atActivities.length > 0 ? [atActivities[0]] : []);
     setFallbackInput("");
   }
 
@@ -1702,13 +1759,15 @@ function App() {
 
   function resetFallback() {
     setFallbackData(null);
-    setFallbackActivities([]);
-    setSelectedFallbackActivities([]);
+    setFallbackActivitiesSS([]);
+    setFallbackActivitiesAT([]);
+    setSelectedFallbackActivitiesSS([]);
+    setSelectedFallbackActivitiesAT([]);
     setFallbackInput("");
   }
 
-  const toggleFallbackActivity = (activity) => {
-    setSelectedFallbackActivities(prev =>
+  const toggleFallbackActivity = (setter) => (activity) => {
+    setter(prev =>
       prev.includes(activity) ? prev.filter(t=>t!==activity) : [...prev, activity]
     );
   };
@@ -2120,10 +2179,10 @@ function App() {
                   대체문자 성공 건수 분석
                 </p>
                 <p style={{margin:"0 0 20px",fontSize:"14px",color:"#8B95A1",lineHeight:1.6}}>
-                  CJ 메시지 발송 결과를 드래그 앤 드롭하세요. <span style={{color:"#C4C9D0"}}>(activity_name, channel1_f_code, channel2_f_code 컬럼 필수)</span>
+                  CJ 메시지 발송 결과 파일을 드래그 앤 드롭하세요. <span style={{color:"#C4C9D0"}}>(activity_name, req_dt/comp_dt, channel1_f_code, channel2_f_code 컬럼 사용)</span>
                 </p>
                 <textarea className="paste-textarea" value={fallbackInput} onChange={e=>setFallbackInput(e.target.value)}
-                  placeholder={"\n예시:\n\nactivity_name,channel1_f_code,channel2_f_code\nSO Zipprix,8,00\nSO Zipprix,0,00\nSO Zipprix,B,0\n대체문자 성공 조건: channel1_f_code != 0 AND channel2_f_code == 0"}
+                  placeholder={"\n예시:\n\nactivity_name,req_dt,comp_dt,channel1_f_code,channel2_f_code\nSS Welcome Reminder OptIn,20260623093000,20260623093005,8,00\nAT Welcome New,20260623093000,20260623093005,0,00\nSS Welcome Reminder OptOut,20260623093000,20260623093005,B,0\n\n대체문자 성공 조건: channel1_f_code != 0 AND channel2_f_code == 0"}
                   onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&fallbackInput.trim()){handleFallbackSubmit(fallbackInput.trim());}}}
                   style={{backgroundColor:fallbackDrag?"#fff":"#FAFAFA",minHeight:"220px"}}/>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"14px"}}>
@@ -2140,13 +2199,27 @@ function App() {
                   <button className="retry-btn" onClick={resetFallback}>처음으로</button>
                 </div>
 
-                <FallbackSMSTable
+                <FallbackSMSBrandTable
+                  brandKey="SS"
+                  brandLabel="쌤소나이트"
+                  title={<><span style={{color:"#2563EB"}}>쌤소나이트</span> 대체문자 성공 분석</>}
                   data={fallbackData.data}
-                  activities={fallbackActivities}
-                  selectedActivities={selectedFallbackActivities}
-                  onActivityToggle={toggleFallbackActivity}
-                  onSelectAll={()=>setSelectedFallbackActivities(fallbackActivities)}
-                  onResetActivities={()=>setSelectedFallbackActivities([])}
+                  activities={fallbackActivitiesSS}
+                  selectedActivities={selectedFallbackActivitiesSS}
+                  onActivityToggle={toggleFallbackActivity(setSelectedFallbackActivitiesSS)}
+                  onSelectAll={()=>setSelectedFallbackActivitiesSS(fallbackActivitiesSS)}
+                  onResetActivities={()=>setSelectedFallbackActivitiesSS([])}
+                />
+                <FallbackSMSBrandTable
+                  brandKey="AT"
+                  brandLabel="아메리칸 투어리스터"
+                  title={<><span style={{color:"#C53030"}}>아메리칸 투어리스터</span> 대체문자 성공 분석</>}
+                  data={fallbackData.data}
+                  activities={fallbackActivitiesAT}
+                  selectedActivities={selectedFallbackActivitiesAT}
+                  onActivityToggle={toggleFallbackActivity(setSelectedFallbackActivitiesAT)}
+                  onSelectAll={()=>setSelectedFallbackActivitiesAT(fallbackActivitiesAT)}
+                  onResetActivities={()=>setSelectedFallbackActivitiesAT([])}
                 />
               </>
             )}
