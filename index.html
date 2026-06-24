@@ -324,26 +324,179 @@ async function doCopyImage(elementId, setLoading) {
   }
 }
 
-function parseCSV(text) {
-  const lines = text.trim().split('\n');
-  if (lines.length < 2) return null;
-  const headers = lines[0].split(',').map(h => h.trim());
-  if (!headers.includes('groupTag') || !headers.includes('date')) return null;
+function parseCSVLine(line) {
+  const result = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
 
+function normalizeKakaoDate(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const digits = raw.replace(/[^0-9]/g, '');
+  if (digits.length === 8) return digits;
+  return raw;
+}
+
+function sanitizeGroupTagPart(value) {
+  return String(value || '')
+    .trim()
+    // 알림톡 templateCode의 공통 접두/키워드인 TEMPLATE은 식별 의미가 낮아 groupTag 출력에서 제외
+    .replace(/(^|_)TEMPLATE(_|$)/gi, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function makeFallbackGroupTag(row) {
+  const senderKey = String(row.senderKey || 'UNKNOWN').trim() || 'UNKNOWN';
+  const templateCode = sanitizeGroupTagPart(row.templateCode);
+  const messageType = String(row.messageType || '').trim();
+  const date = normalizeKakaoDate(row.date);
+
+  // 알림톡 CSV에는 groupTag가 없는 대신 templateCode가 템플릿/메시지 식별값 역할을 함
+  // 단, TEMPLATE 키워드는 모든 항목에 공통으로 들어가는 접두어이므로 제외하여 표시함
+  if (templateCode) return `${senderKey}_${templateCode}`;
+  if (messageType) return `${senderKey}_${messageType}_${date}`;
+  return `${senderKey}_${date}`;
+}
+
+function parseCSV(text) {
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+  const lines = normalized.split('\n').filter(line => line.trim() !== '');
+  if (lines.length < 2) return null;
+  const headers = parseCSVLine(lines[0]).map(h => h.replace(/^\uFEFF/, '').trim());
+
+  // v1.2: 알림톡 CSV는 groupTag가 없고 templateCode 기준으로 제공될 수 있음.
+  // date는 필수이며, groupTag가 없으면 senderKey + templateCode 기반 대체 groupTag를 생성함.
+  if (!headers.includes('date')) return null;
+  if (!headers.includes('groupTag') && !headers.includes('templateCode')) return null;
+
+  const numericHeaders = ['successCount','validFailCount','readCount','button1','button2','image1'];
   const data = lines.slice(1).map(line => {
-    const matches = line.match(/(".*?"|[^,]+)/g);
-    if (!matches) return null;
+    const values = parseCSVLine(line);
     const row = {};
     headers.forEach((h, i) => {
-      let val = matches[i] ? matches[i].replace(/"/g, '').trim() : '';
-      if (['successCount','validFailCount','readCount','button1','button2','image1'].includes(h)) {
-        val = parseInt(val.replace(/,/g,''), 10) || 0;
+      let val = values[i] !== undefined ? values[i].trim() : '';
+      if (h === 'date') {
+        val = normalizeKakaoDate(val);
+      } else if (numericHeaders.includes(h)) {
+        val = parseInt(String(val).replace(/,/g,'').replace(/\s/g,''), 10) || 0;
       }
       row[h] = val;
     });
+
+    // optional numeric columns must exist for downstream aggregation logic
+    numericHeaders.forEach(h => {
+      if (row[h] === undefined || row[h] === null || row[h] === '') row[h] = 0;
+    });
+
+    // 알림톡 CSV 호환: groupTag가 없으면 templateCode 기반으로 자동 생성
+    // v1.3: 내부 생성 여부를 표시해 CJ StatusBoard 다중 입력 UI 조건으로 활용
+    if (!row.groupTag) {
+      row.groupTag = makeFallbackGroupTag(row);
+      row._generatedGroupTag = true;
+    } else {
+      row._generatedGroupTag = false;
+    }
+
+    // API 상세 리포트 표에서 알림톡 유형이 비어 보이지 않도록 최소 표시값 보정
+    if (!row.messageSpec && row.messageType) row.messageSpec = row.messageType;
+    if (!row.chatBubbleType && row.templateCode) row.chatBubbleType = row.templateCode;
+
     return row;
-  }).filter(Boolean);
+  }).filter(row => row.groupTag && row.date);
   return { type: 'CSV', data, tags: [...new Set(data.map(d => d.groupTag))] };
+}
+
+
+function normalizeResultCode(value) {
+  const raw = String(value ?? '').trim().replace(/^["']|["']$/g, '').trim();
+  if (!raw) return null;
+  if (/^[+-]?\d+$/.test(raw)) return parseInt(raw, 10);
+  return raw.toUpperCase();
+}
+
+function isResultCodeZero(value) {
+  const normalized = normalizeResultCode(value);
+  if (normalized === null) return false;
+  if (typeof normalized === 'number') return normalized === 0;
+  return /^0+$/.test(String(normalized));
+}
+
+function isResultCodeNonZero(value) {
+  const normalized = normalizeResultCode(value);
+  if (normalized === null) return false;
+  if (typeof normalized === 'number') return normalized !== 0;
+  return !/^0+$/.test(String(normalized));
+}
+
+function parseFallbackSMSCSV(text) {
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+  const lines = normalized.split('\n').filter(line => line.trim() !== '');
+  if (lines.length < 2) {
+    return { error: 'CSV 데이터가 비어 있거나 헤더/본문 행이 부족합니다.' };
+  }
+
+  const headers = parseCSVLine(lines[0]).map(h => h.replace(/^\uFEFF/, '').trim());
+  const requiredHeaders = ['activity_name', 'channel1_f_code', 'channel2_f_code'];
+  const missing = requiredHeaders.filter(h => !headers.includes(h));
+  if (missing.length > 0) {
+    return { error: `필수 컬럼이 없습니다: ${missing.join(', ')}` };
+  }
+
+  const data = lines.slice(1).map((line, lineIndex) => {
+    const values = parseCSVLine(line);
+    const row = { _rowNumber: lineIndex + 2 };
+    headers.forEach((h, i) => {
+      row[h] = values[i] !== undefined ? String(values[i]).trim() : '';
+    });
+    row._fallbackSuccess = isResultCodeNonZero(row.channel1_f_code) && isResultCodeZero(row.channel2_f_code);
+    return row;
+  }).filter(row => row.activity_name);
+
+  if (data.length === 0) {
+    return { error: 'activity_name 값이 있는 데이터 행이 없습니다.' };
+  }
+
+  const activities = [...new Set(data.map(d => d.activity_name))].sort((a,b)=>a.localeCompare(b, 'ko'));
+  return { type: 'FALLBACK_SMS_CSV', data, activities };
+}
+
+function aggregateFallbackSMSRows(data, selectedActivities) {
+  const selectedSet = new Set(selectedActivities);
+  const rows = selectedActivities.map(activity => {
+    const matched = data.filter(row => row.activity_name === activity);
+    const success = matched.filter(row => row._fallbackSuccess).length;
+    return {
+      activity,
+      total: matched.length,
+      success,
+      rate: matched.length > 0 ? ((success / matched.length) * 100).toFixed(2) + '%' : '0.00%',
+    };
+  }).filter(row => selectedSet.has(row.activity));
+
+  const totals = rows.reduce((acc, row) => {
+    acc.total += row.total;
+    acc.success += row.success;
+    return acc;
+  }, { total: 0, success: 0 });
+
+  totals.rate = totals.total > 0 ? ((totals.success / totals.total) * 100).toFixed(2) + '%' : '0.00%';
+  return { rows, totals };
 }
 
 function mergeReports(reports) {
@@ -499,6 +652,30 @@ function calcRate(num, den, decimals=2) {
   if (num==null||!den) return null;
   return ((num/den)*100).toFixed(decimals)+"%";
 }
+
+function fmtCopy(n) {
+  return fmt(n) ?? "0";
+}
+
+function writeClipboardText(text, successMessage) {
+  navigator.clipboard.writeText(text).then(() => alert(successMessage || "복사되었습니다."));
+}
+
+function buildKakaoCopyValues({s, f, r, b1, b2, i1}) {
+  const values = [fmtCopy(s), fmtCopy(f), fmtCopy(r), fmtCopy(b1)];
+  if ((b2 || 0) > 0) values.push(fmtCopy(b2));
+  values.push(fmtCopy(i1));
+  return values;
+}
+
+function cleanFailureCode(value) {
+  return String(value ?? '').replace(/[?？].*$/, '').trim();
+}
+
+function isKakaoFallbackRow(row) {
+  return String(row.friendType ?? '').trim().toUpperCase() === 'N';
+}
+
 
 function EditableNum({ value, onSave, bold, faint, secTop }) {
   const [editing, setEditing] = useState(false);
@@ -799,11 +976,10 @@ function CSVTable({ id, title, data, tags, selectedTags, onTagToggle, onResetTag
   },{s:0,f:0,r:0,b1:0,b2:0});
 
   const copy = () => {
-    const table = document.getElementById(id);
-    const totalRow = table?.querySelector("tr.bg-total");
-    if (!totalRow) { alert("복사할 합계 데이터가 없습니다."); return; }
-    const text = Array.from(totalRow.querySelectorAll("td")).slice(1).map(td=>td.innerText).join("\t");
-    navigator.clipboard.writeText(text).then(()=>alert("합계 수치만 복사되었습니다."));
+    if (rows.length === 0) { alert("복사할 합계 데이터가 없습니다."); return; }
+    const values = [fmtCopy(totals.s), fmtCopy(totals.f), fmtCopy(totals.r), fmtCopy(totals.b1)];
+    if ((totals.b2 || 0) > 0) values.push(fmtCopy(totals.b2));
+    writeClipboardText(values.join("\t"), "합계 수치만 복사되었습니다.");
   };
 
   return (
@@ -854,7 +1030,7 @@ function CSVTable({ id, title, data, tags, selectedTags, onTagToggle, onResetTag
 }
 
 function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
-  const [selectedTag, setSelectedTag] = useState(tags[0]||"");
+  const [selectedTags, setSelectedTags] = useState(tags[0] ? [tags[0]] : []);
   const [startDate, setStartDate] = useState("");
   const [endDate,   setEndDate]   = useState("");
 
@@ -868,8 +1044,18 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
     }
   }, [data]);
 
+  useEffect(() => {
+    setSelectedTags(tags[0] ? [tags[0]] : []);
+  }, [tags]);
+
+  const toggleTag = (tag) => {
+    setSelectedTags(prev => prev.includes(tag) ? prev.filter(t=>t!==tag) : [...prev, tag]);
+  };
+
+  const resetTags = () => setSelectedTags([]);
+
   const filteredData = data.filter(d => {
-    if (d.groupTag!==selectedTag) return false;
+    if (!selectedTags.includes(d.groupTag)) return false;
     const dDate=d.date.toString();
     const start=startDate?fmtCSV(startDate):"00000000";
     const end=endDate?fmtCSV(endDate):"99999999";
@@ -883,10 +1069,17 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
     if(curr.senderKey) senderKeySet.add(curr.senderKey);
     if(curr.messageSpec) msgSpecSet.add(curr.messageSpec);
     if(curr.chatBubbleType) chatBubbleSet.add(curr.chatBubbleType);
-    if(curr.friendType==='F') {
-      s+=curr.successCount; f_total+=curr.validFailCount; r+=curr.readCount;
-      b1+=curr.button1; if(curr.button2) b2+=curr.button2; if(curr.image1) i1+=curr.image1;
-    } else if(curr.friendType==='N') { f_total+=curr.validFailCount; }
+
+    if (isKakaoFallbackRow(curr)) {
+      f_total += curr.validFailCount || 0;
+    } else {
+      s += curr.successCount || 0;
+      f_total += curr.validFailCount || 0;
+      r += curr.readCount || 0;
+      b1 += curr.button1 || 0;
+      b2 += curr.button2 || 0;
+      i1 += curr.image1 || 0;
+    }
   });
 
   const dateArr = [...dateSet].map(String).sort();
@@ -895,16 +1088,26 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
     : `${dateArr[0]} ~ ${dateArr[dateArr.length-1]}`;
   const senderKeyStr=[...senderKeySet].join(', ');
   const msgSpecStr=[...msgSpecSet].join(', '), chatBubbleStr=[...chatBubbleSet].join(', ');
+  const groupTagStr = selectedTags.length > 0 ? selectedTags.join(', ') : "-";
 
   let periodLabel="전체 기간";
   if(startDate&&endDate) { periodLabel=startDate===endDate?fmtCSV(startDate):`${fmtCSV(startDate)} ~ ${fmtCSV(endDate)}`; }
   else if(startDate) periodLabel=`${fmtCSV(startDate)} ~`;
   else if(endDate) periodLabel=`~ ${fmtCSV(endDate)}`;
 
-  const headerTitle=selectedTag?`${periodLabel} - ${selectedTag} [${senderKeyStr}]`:"선택된 데이터가 없습니다";
+  const selectedTagLabel = selectedTags.length === 0 ? "선택된 데이터가 없습니다"
+    : selectedTags.length === 1 ? selectedTags[0]
+    : `선택 그룹 ${selectedTags.length}개`;
+  const headerTitle=selectedTags.length>0?`${periodLabel} - ${selectedTagLabel} [${senderKeyStr}]`:"선택된 데이터가 없습니다";
   const openRate=s>0?((r/s)*100).toFixed(1):"0.0";
   const btn1Rate=r>0?((b1/r)*100).toFixed(1):"0.0";
   const img1Rate=r>0?((i1/r)*100).toFixed(1):"0.0";
+
+  const copy = () => {
+    if (filteredData.length === 0) { alert("복사할 합계 데이터가 없습니다."); return; }
+    const values = buildKakaoCopyValues({s, f:f_total, r, b1, b2, i1});
+    writeClipboardText(values.join("\t"), "API 집계 합계 수치가 복사되었습니다.");
+  };
 
   const tdStyle = (bg, color, bold) => ({
     padding:"12px", fontSize:"13px",
@@ -917,12 +1120,26 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
   return (
     <div style={{background:"#fff",padding:"24px",borderRadius:"20px",boxShadow:"0 2px 16px rgba(0,0,0,0.07)",marginBottom:"24px"}}>
       <div data-html2canvas-ignore="true" style={{background:"#FAFAFA",border:"1px solid #E5E8EC",borderRadius:"12px",padding:"18px",marginBottom:"20px",display:"flex",flexDirection:"column",gap:"14px"}}>
-        <div style={{display:"flex",alignItems:"center",gap:"16px"}}>
-          <div style={{width:"70px",fontSize:"13px",fontWeight:"700",color:"#333D4B"}}>그룹 태그</div>
-          <select value={selectedTag} onChange={e=>setSelectedTag(e.target.value)}
-            style={{flex:"1",maxWidth:"300px",padding:"8px 12px",borderRadius:"6px",border:"1px solid #C4C9D0",outline:"none",fontSize:"13px",cursor:"pointer",background:"#fff"}}>
-            {tags.map(tag=><option key={tag} value={tag}>{tag}</option>)}
-          </select>
+        <div style={{display:"flex",alignItems:"flex-start",gap:"16px"}}>
+          <div style={{width:"70px",fontSize:"13px",fontWeight:"700",color:"#333D4B",paddingTop:"5px",flexShrink:0}}>그룹 태그</div>
+          <div style={{flex:1}}>
+            <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px"}}>
+              <p style={{fontSize:"11px",color:"#8B95A1",fontWeight:"bold",margin:0}}>그룹 태그 중복 선택:</p>
+              <button onClick={resetTags}
+                style={{display:"flex",alignItems:"center",gap:"3px",background:"#F2F4F6",border:"1px solid #E5E8EC",borderRadius:"6px",padding:"3px 8px",fontSize:"11px",fontWeight:"600",color:"#8B95A1",cursor:"pointer",fontFamily:"inherit"}}
+                onMouseEnter={e=>{e.currentTarget.style.background="#E5E8EC";e.currentTarget.style.color="#333D4B";}}
+                onMouseLeave={e=>{e.currentTarget.style.background="#F2F4F6";e.currentTarget.style.color="#8B95A1";}}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                초기화
+              </button>
+              <button className="copy-btn" onClick={copy}>합계행 복사하기</button>
+            </div>
+            <div className="tag-container" style={{marginBottom:0}}>
+              {tags.map(tag=>(
+                <div key={tag} className={`tag-item ${selectedTags.includes(tag)?'active':''}`} onClick={()=>toggleTag(tag)}>{tag}</div>
+              ))}
+            </div>
+          </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:"16px"}}>
           <div style={{width:"70px",fontSize:"13px",fontWeight:"700",color:"#333D4B"}}>기간 선택</div>
@@ -948,7 +1165,7 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
         <div style={{borderRadius:"8px",border:"1px solid #E5E8EC",overflow:"hidden"}}>
           <table style={{width:"100%",borderCollapse:"collapse",textAlign:"center",tableLayout:"fixed"}} id={id}>
             <thead>
-              <tr><th colSpan="2" style={{background:"#822551",color:"#fff",padding:"12px",fontSize:"14px",fontWeight:"700",verticalAlign:"middle",textAlign:"center"}}>{headerTitle}</th></tr>
+              <tr><th colSpan="2" style={{background:"#822551",color:"#fff",padding:"12px",fontSize:"14px",fontWeight:"700",verticalAlign:"middle",textAlign:"center",wordBreak:"break-word",lineHeight:1.4}}>{headerTitle}</th></tr>
               <tr>
                 <th style={{background:"#9A2B61",color:"#fff",padding:"10px",fontSize:"13px",width:"35%",borderRight:"1px solid rgba(255,255,255,0.2)",verticalAlign:"middle",textAlign:"center"}}>키</th>
                 <th style={{background:"#9A2B61",color:"#fff",padding:"10px",fontSize:"13px",width:"65%",verticalAlign:"middle",textAlign:"center"}}>값</th>
@@ -956,7 +1173,7 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
             </thead>
             <tbody>
               {[
-                ["groupTag", selectedTag||"-"],
+                ["groupTag", groupTagStr],
                 ["date", dateStr||"-"],
                 ["senderKey", senderKeyStr||"-"],
                 ["messageSpec", msgSpecStr||"-"],
@@ -970,7 +1187,7 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
               ].map(([key,val,color,bold],idx)=>(
                 <tr key={key} style={{borderBottom:"1px solid #E5E8EC"}}>
                   <td style={tdStyle(idx%2===0?"#F2F4F6":"#fff", null, bold)}>{key}</td>
-                  <td style={tdStyle(idx%2===0?"#F2F4F6":"#fff", color, bold)}>{val}</td>
+                  <td style={{...tdStyle(idx%2===0?"#F2F4F6":"#fff", color, bold), whiteSpace:"normal", wordBreak:"break-word"}}>{val}</td>
                 </tr>
               ))}
             </tbody>
@@ -994,27 +1211,119 @@ function DropdownDetailTable({ id, title, data, tags, onContextMenu }) {
   );
 }
 
-function KakaoExternalReport({ id, title, onContextMenu }) {
+function KakaoExternalReport({ id, title, onContextMenu, multiInput=false }) {
   const [rawText, setRawText] = useState("");
+  const [rawText2, setRawText2] = useState("");
   const [parsedData, setParsedData] = useState(null);
   const [editCols, setEditCols] = useState(null);
+  const [sourceRows, setSourceRows] = useState([]);
+
+  const normalizeColumns = (columns) => {
+    const next = [...columns];
+    if (next.length > 12) next[12] = cleanFailureCode(next[12]);
+    return next;
+  };
+
+  const toNum = (v) => {
+    const n = parseInt(String(v ?? '').replace(/,/g,'').replace(/\s/g,''), 10);
+    return isNaN(n) ? 0 : n;
+  };
+
+  const dedupe = (arr) => {
+    const seen = new Set();
+    return arr.map(v => String(v ?? '').trim()).filter(v => {
+      if (!v || seen.has(v)) return false;
+      seen.add(v);
+      return true;
+    });
+  };
+
+  const joinUnique = (arr, fallback="") => {
+    const vals = dedupe(arr);
+    return vals.length ? vals.join(' / ') : fallback;
+  };
+
+  const cleanModuleName = (v) => {
+    return String(v ?? '')
+      .replace(/\bOpt\s*In\b/gi, '')
+      .replace(/\bOpt\s*Out\b/gi, '')
+      .replace(/[_\-\/]+\s*$/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  };
+
+  const earliestTime = (arr) => {
+    const vals = dedupe(arr);
+    if (!vals.length) return '';
+    return vals.sort((a,b)=>String(a).localeCompare(String(b)))[0];
+  };
+
+  const mergeFailureCodes = (arr) => {
+    let codes = dedupe(arr.map(cleanFailureCode).map(v => v || '00'));
+    const nonZero = codes.filter(c => c !== '00');
+    if (nonZero.length > 0) codes = nonZero;
+    return codes.length ? codes.join(' / ') : '00';
+  };
+
+  const aggregateStatusRows = (rows) => {
+    if (rows.length === 1) return rows[0];
+    const merged = new Array(14).fill('');
+    merged[0] = joinUnique(rows.map(r=>r[0]));                      // MID
+    merged[1] = joinUnique(rows.map(r=>r[1]));                      // 저니명
+    merged[2] = joinUnique(rows.map(r=>r[2]));                      // 버전
+    merged[3] = joinUnique(rows.map(r=>cleanModuleName(r[3])));     // 모듈명: OptIn/OptOut 제거
+    merged[4] = joinUnique(rows.map(r=>r[4]));                      // 페일백 구분: LMS / NO
+    merged[5] = earliestTime(rows.map(r=>r[5]));                    // 발송시간: 더 빠른 시간
+    [6,7,8,9,10,11,13].forEach(i => {
+      merged[i] = String(rows.reduce((sum,row)=>sum + toNum(row[i]), 0));
+    });
+    merged[12] = mergeFailureCodes(rows.map(r=>r[12]));             // 실패코드 병합
+    return merged;
+  };
+
+  const parseStatusRows = () => {
+    const rawBlocks = multiInput ? [rawText, rawText2] : [rawText];
+    const rows = [];
+    rawBlocks.forEach(block => {
+      String(block || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').forEach(line => {
+        const cols = normalizeColumns(line.split('\t').map(s=>s.trim()));
+        if (cols.length >= 14) rows.push(cols.slice(0,14));
+      });
+    });
+    return rows;
+  };
 
   const handleParse = () => {
-    if (!rawText.trim()) return;
-    const columns = rawText.split('\t').map(s=>s.trim());
-    if (columns.length>=14) { setParsedData(columns); setEditCols([...columns]); }
-    else alert("데이터 형식이 올바르지 않습니다. 14개 이상의 탭 구분 컬럼이 필요합니다.");
+    const rows = parseStatusRows();
+    if (rows.length === 0) {
+      alert("데이터 형식이 올바르지 않습니다. 14개 이상의 탭 구분 컬럼이 필요합니다.");
+      return;
+    }
+    const displayCols = aggregateStatusRows(rows);
+    setSourceRows(rows);
+    setParsedData(displayCols);
+    setEditCols([...displayCols]);
   };
 
   const headers = ["MID","저니명","버전","모듈","페일백 구분","발송시간",
     {text:"대기중",color:"#F59E0B"},{text:"발송중",color:"#F59E0B"},
-    {text:"접수실패",color:"#EF4444"},{text:"친구톡 발송완료",color:"#10B981"},
+    {text:"접수실패",color:"#EF4444"},{text:multiInput?"알림톡 발송완료":"브랜드메시지 발송완료",color:"#10B981"},
     {text:"페일백 발송완료",color:"#3B82F6"},{text:"발송실패",color:"#EF4444"},
     {text:"실패코드",color:"#EF4444"},{text:"총 건수",color:"#8B5CF6"}];
 
   const tdC = {padding:"10px 12px",fontSize:"12px",color:"#333D4B",
     border:"1px solid #F2F4F6",textAlign:"center",
     verticalAlign:"middle",whiteSpace:"nowrap",fontVariantNumeric:"tabular-nums"};
+
+  const renderInputField = (value, setter, placeholder, optionalLabel) => (
+    <div style={{display:"flex",alignItems:"center",gap:"8px",flex:1,minWidth:0}}>
+      {optionalLabel && <span style={{fontSize:"11px",fontWeight:"700",color:"#8B95A1",whiteSpace:"nowrap"}}>{optionalLabel}</span>}
+      <input type="text" value={value} onChange={e=>setter(e.target.value)}
+        placeholder={placeholder}
+        style={{flex:1,minWidth:0,padding:"10px 12px",borderRadius:"8px",border:"1px solid #E5E8EC",outline:"none",fontSize:"13px"}}
+        onKeyDown={e=>{if(e.key==="Enter")handleParse();}}/>
+    </div>
+  );
 
   return (
     <div style={{background:"#fff",padding:"24px",borderRadius:"20px",boxShadow:"0 2px 16px rgba(0,0,0,0.07)",marginBottom:"24px"}}>
@@ -1024,17 +1333,29 @@ function KakaoExternalReport({ id, title, onContextMenu }) {
       </div>
 
       {!parsedData ? (
-        <div style={{display:"flex",gap:"8px"}}>
-          <input type="text" value={rawText} onChange={e=>setRawText(e.target.value)}
-            placeholder="CJ StatusBoard에서 복사한 데이터(한 줄)를 붙여넣으세요."
-            style={{flex:1,padding:"10px 12px",borderRadius:"8px",border:"1px solid #E5E8EC",outline:"none",fontSize:"13px"}}
-            onKeyDown={e=>{if(e.key==="Enter")handleParse();}}/>
-          <button onClick={handleParse} className="analyze-btn" style={{padding:"10px 20px"}}>확인</button>
+        <div style={{display:"flex",gap:"8px",alignItems:"stretch"}}>
+          <div style={{display:"flex",flexDirection:"column",gap:"8px",flex:1,minWidth:0}}>
+            {renderInputField(rawText, setRawText,
+              multiInput ? "CJ StatusBoard 데이터 1번째 줄을 붙여넣으세요. (예: OptIn)" : "CJ StatusBoard에서 복사한 데이터(한 줄)를 붙여넣으세요.",
+              multiInput ? "1" : null)}
+            {multiInput && renderInputField(rawText2, setRawText2,
+              "CJ StatusBoard 데이터 2번째 줄을 붙여넣으세요. (선택, 예: OptOut)",
+              "2")}
+            {multiInput && <div style={{fontSize:"11px",color:"#8B95A1",lineHeight:1.5}}>
+              동일 캠페인이 OptIn/OptOut 등으로 분기된 경우 두 줄을 각각 입력하면 합산 표시됩니다. 한 줄만 입력해도 동작합니다.
+            </div>}
+          </div>
+          <button onClick={handleParse} className="analyze-btn" style={{padding:"10px 20px",alignSelf:"flex-start"}}>확인</button>
         </div>
       ) : (
         <div>
           <div id={id} onContextMenu={onContextMenu} title="우클릭하면 이미지 저장/복사 메뉴가 나타납니다"
             style={{background:"#F9FAFB",padding:"20px",borderRadius:"12px",cursor:"context-menu"}}>
+            {sourceRows.length > 1 && (
+              <div style={{fontSize:"12px",color:"#8B95A1",fontWeight:"700",margin:"0 0 10px"}}>
+                입력 {sourceRows.length}건 합산 결과
+              </div>
+            )}
             <div style={{overflowX:"auto",borderRadius:"8px",border:"1px solid #E5E8EC"}}>
               <table style={{borderCollapse:"collapse",background:"#fff",minWidth:"900px",width:"100%"}}>
                 <thead>
@@ -1064,7 +1385,7 @@ function KakaoExternalReport({ id, title, onContextMenu }) {
                           td.appendChild(inp);
                           inp.focus(); inp.select();
                           const commit=()=>{
-                            const nv=inp.value||cur;
+                            const nv=i===12 ? cleanFailureCode(inp.value||cur) : (inp.value||cur);
                             const nc=[...editCols]; nc[i]=nv; setEditCols(nc);
                             td.innerHTML=nv;
                           };
@@ -1079,18 +1400,125 @@ function KakaoExternalReport({ id, title, onContextMenu }) {
 
             {editCols && (
               <ul style={{fontSize:"15px",color:"#333D4B",lineHeight:"1.8",margin:"16px 0 0",paddingLeft:"24px",listStyleType:"disc"}}>
-                <li><strong>전체 모수</strong>: {fmt(parseInt(editCols[13],10))}</li>
-                <li><strong>발송 성공</strong>: {fmt(parseInt(editCols[9],10))}</li>
-                <li><strong>발송 실패</strong>: {fmt(parseInt(editCols[11],10))}</li>
+                <li><strong>전체 모수</strong>: {fmt(toNum(editCols[13]))}</li>
+                <li><strong>발송 성공</strong>: {fmt(toNum(editCols[9]))}</li>
+                <li><strong>발송 실패</strong>: {fmt(toNum(editCols[11]))}</li>
               </ul>
             )}
           </div>
 
           <div data-html2canvas-ignore="true" style={{marginTop:"14px",textAlign:"right"}}>
-            <button className="retry-btn" onClick={()=>{setParsedData(null);setEditCols(null);setRawText("");}}>데이터 다시 입력</button>
+            <button className="retry-btn" onClick={()=>{setParsedData(null);setEditCols(null);setSourceRows([]);setRawText("");setRawText2("");}}>데이터 다시 입력</button>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+function FallbackSMSTable({ data, activities, selectedActivities, onActivityToggle, onSelectAll, onResetActivities }) {
+  const [searchText, setSearchText] = useState("");
+  const visibleActivities = activities.filter(activity =>
+    activity.toLowerCase().includes(searchText.trim().toLowerCase())
+  );
+
+  const { rows, totals } = aggregateFallbackSMSRows(data, selectedActivities);
+
+  const copyTotalSuccess = () => {
+    writeClipboardText(String(totals.success || 0), "대체문자 성공 합계가 복사되었습니다.");
+  };
+
+  const copyTable = () => {
+    if (rows.length === 0) { alert("복사할 데이터가 없습니다."); return; }
+    const lines = [
+      ["Activity Name", "대체문자 성공 수"].join("\t"),
+      ...rows.map(row => [row.activity, row.success].join("\t")),
+      ["전체 합계", totals.success].join("\t"),
+    ];
+    writeClipboardText(lines.join("\n"), "대체문자 결과 표가 복사되었습니다.");
+  };
+
+  return (
+    <div style={{background:"#fff",padding:"24px",borderRadius:"20px",boxShadow:"0 2px 16px rgba(0,0,0,0.07)",marginBottom:"24px"}}>
+      <div className="summary-header">
+        <h3 className="summary-title">대체문자 성공 건수 분석 결과</h3>
+        <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+          <button className="copy-btn" onClick={copyTotalSuccess}>성공 합계 복사</button>
+          <button className="copy-btn" onClick={copyTable}>표 복사</button>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(2, 1fr)",gap:"12px",marginBottom:"18px"}}>
+        <div style={{background:"#F9FAFB",border:"1px solid #E5E8EC",borderRadius:"14px",padding:"16px",textAlign:"center"}}>
+          <div style={{fontSize:"11px",fontWeight:"700",color:"#8B95A1",marginBottom:"6px"}}>선택 Activity</div>
+          <div style={{fontSize:"22px",fontWeight:"800",color:"#333D4B"}}>{fmt(selectedActivities.length)}</div>
+        </div>
+        <div style={{background:"#EEF2FF",border:"1px solid #C7D2FE",borderRadius:"14px",padding:"16px",textAlign:"center"}}>
+          <div style={{fontSize:"11px",fontWeight:"700",color:"#4F46E5",marginBottom:"6px"}}>대체문자 성공 수</div>
+          <div style={{fontSize:"22px",fontWeight:"800",color:"#4F46E5"}}>{fmt(totals.success)}</div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px",flexWrap:"wrap"}}>
+        <p style={{fontSize:"11px",color:"#8B95A1",fontWeight:"bold",margin:0}}>Activity 다중 선택:</p>
+        <button onClick={onResetActivities}
+          style={{display:"flex",alignItems:"center",gap:"3px",background:"#F2F4F6",border:"1px solid #E5E8EC",borderRadius:"6px",padding:"3px 8px",fontSize:"11px",fontWeight:"600",color:"#8B95A1",cursor:"pointer",fontFamily:"inherit"}}>
+          초기화
+        </button>
+        <button onClick={onSelectAll}
+          style={{display:"flex",alignItems:"center",gap:"3px",background:"#F2F4F6",border:"1px solid #E5E8EC",borderRadius:"6px",padding:"3px 8px",fontSize:"11px",fontWeight:"600",color:"#8B95A1",cursor:"pointer",fontFamily:"inherit"}}>
+          전체 선택
+        </button>
+        <input type="text" value={searchText} onChange={e=>setSearchText(e.target.value)}
+          placeholder="activity_name 검색"
+          style={{marginLeft:"auto",minWidth:"220px",padding:"7px 10px",borderRadius:"8px",border:"1px solid #E5E8EC",outline:"none",fontSize:"12px",fontFamily:"inherit",background:"#fff"}}/>
+      </div>
+
+      <div className="tag-container" style={{maxHeight:"150px"}}>
+        {visibleActivities.map(activity=>(
+          <div key={activity} className={`tag-item ${selectedActivities.includes(activity)?'active':''}`} onClick={()=>onActivityToggle(activity)}>
+            {activity}
+          </div>
+        ))}
+        {visibleActivities.length === 0 && (
+          <div style={{fontSize:"12px",color:"#8B95A1",padding:"8px"}}>검색 결과가 없습니다.</div>
+        )}
+      </div>
+
+      <div style={{fontSize:"11px",color:"#8B95A1",lineHeight:1.6,marginBottom:"14px"}}>
+        산정 조건: <strong>channel1_f_code ≠ 0</strong> AND <strong>channel2_f_code = 0</strong>. 
+        0, 00, 000은 모두 성공 코드 0으로 처리합니다.
+      </div>
+
+      <table className="stable" id="fallback-sms-table">
+        <thead>
+          <tr>
+            <th>Activity Name</th>
+            <th>대체문자 성공 수</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row=>(
+            <tr key={row.activity}>
+              <td className="bg-light" style={{textAlign:"left",whiteSpace:"normal",wordBreak:"break-word"}}>{row.activity}</td>
+              <td style={{fontWeight:"800",color:"#4F46E5"}}>{fmt(row.success)}</td>
+            </tr>
+          ))}
+          {rows.length>0 ? (
+            <tr className="bg-total">
+              <td className="bg-total">전체 합계</td>
+              <td className="bg-total">{fmt(totals.success)}</td>
+            </tr>
+          ) : (
+            <tr>
+              <td colSpan="2" style={{padding:"28px",fontSize:"13px",color:"#8B95A1",textAlign:"center"}}>
+                Activity를 선택해주세요.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1170,6 +1598,13 @@ function App() {
   const [kakaoInput,    setKakaoInput]    = useState("");
   const [kakaoDrag,     setKakaoDrag]     = useState(false);
 
+  // 대체문자 CSV 상태
+  const [fallbackData, setFallbackData] = useState(null);
+  const [fallbackActivities, setFallbackActivities] = useState([]);
+  const [selectedFallbackActivities, setSelectedFallbackActivities] = useState([]);
+  const [fallbackInput, setFallbackInput] = useState("");
+  const [fallbackDrag, setFallbackDrag] = useState(false);
+
   const doneSlots = slots.filter(s=>s.parsed);
   const doneCount = doneSlots.length;
   const canAddMore = slots.length < MAX_SLOTS;
@@ -1220,7 +1655,7 @@ function App() {
   /* ── 카카오 CSV 핸들러 ── */
   function handleKakaoSubmit(rawText) {
     const csv = parseCSV(rawText);
-    if (!csv) { alert("올바른 CSV 형식이 아닙니다. groupTag, date 컬럼이 필요합니다."); return; }
+    if (!csv) { alert("올바른 CSV 형식이 아닙니다. date 컬럼이 필요하며, groupTag 또는 templateCode 컬럼이 필요합니다."); return; }
     setCsvData(csv);
     const soTags = csv.tags.filter(t=>t.startsWith('SO')||t.startsWith('SS')||t.includes('-SS-')||t.includes('TEST'));
     const atTags = csv.tags.filter(t=>t.startsWith('AT')||t.includes('-AT-')||t.includes('TEST'));
@@ -1243,6 +1678,40 @@ function App() {
     setCsvData(null); setSelectedTags1([]); setSelectedTags2([]);
     setTags1([]); setTags2([]); setTags3([]); setKakaoInput("");
   }
+
+  /* ── 대체문자 CSV 핸들러 ── */
+  function handleFallbackSubmit(rawText) {
+    const parsed = parseFallbackSMSCSV(rawText);
+    if (!parsed || parsed.error) {
+      alert(parsed?.error || "올바른 CSV 형식이 아닙니다.");
+      return;
+    }
+    setFallbackData(parsed);
+    setFallbackActivities(parsed.activities);
+    setSelectedFallbackActivities(parsed.activities.length > 0 ? [parsed.activities[0]] : []);
+    setFallbackInput("");
+  }
+
+  function handleFallbackDrop(e) {
+    e.preventDefault(); setFallbackDrag(false);
+    const file = e.dataTransfer.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=(ev)=>{ handleFallbackSubmit(ev.target.result.trim()); };
+    reader.readAsText(file);
+  }
+
+  function resetFallback() {
+    setFallbackData(null);
+    setFallbackActivities([]);
+    setSelectedFallbackActivities([]);
+    setFallbackInput("");
+  }
+
+  const toggleFallbackActivity = (activity) => {
+    setSelectedFallbackActivities(prev =>
+      prev.includes(activity) ? prev.filter(t=>t!==activity) : [...prev, activity]
+    );
+  };
 
   const toggleTag=(setter,current)=>(tag)=>{
     if(current.includes(tag)) setter(current.filter(t=>t!==tag));
@@ -1347,6 +1816,13 @@ function App() {
           <span className="tab-dot"/>
           카카오톡
           {csvData && <span className="tab-badge" style={{background:"#F59E0B"}}>CSV</span>}
+        </button>
+        <button
+          className={`tab-btn${activeTab==='fallback'?' active':''}${fallbackData?' has-data':''}`}
+          onClick={()=>setActiveTab('fallback')}>
+          <span className="tab-dot"/>
+          대체문자
+          {fallbackData && <span className="tab-badge" style={{background:"#4F46E5"}}>CSV</span>}
         </button>
       </div>
 
@@ -1579,13 +2055,13 @@ function App() {
                 onDragLeave={e=>{e.preventDefault();setKakaoDrag(false);}}
                 onDrop={handleKakaoDrop}>
                 <p style={{margin:"0 0 6px",fontSize:"20px",fontWeight:"800",color:"#333D4B",letterSpacing:"-0.03em"}}>
-                  알림톡·친구톡 발송 결과 분석
+                  알림톡·브랜드메시지 발송 결과 분석
                 </p>
                 <p style={{margin:"0 0 20px",fontSize:"14px",color:"#8B95A1",lineHeight:1.6}}>
                   CSV 파일을 드래그 앤 드롭하세요. <span style={{color:"#C4C9D0"}}>(groupTag, date 컬럼 필수)</span>
                 </p>
                 <textarea className="paste-textarea" value={kakaoInput} onChange={e=>setKakaoInput(e.target.value)}
-                  placeholder={"\n예시:\n\ngroupTag,date,successCount,validFailCount,readCount,button1,...\nAT,20260403,16,0,5,2,..."}
+                  placeholder={"\n예시:\n\ngroupTag,date,successCount,validFailCount,readCount,button1,...\n또는 date,senderKey,templateCode,messageType,successCount,...\nAT,20260403,16,0,5,2,..."}
                   onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&kakaoInput.trim()){handleKakaoSubmit(kakaoInput.trim());}}}
                   style={{backgroundColor:kakaoDrag?"#fff":"#FAFAFA",minHeight:"220px"}}/>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"14px"}}>
@@ -1618,7 +2094,60 @@ function App() {
                   onContextMenu={openCtxMenuFor('kakao-report-capture','카카오톡_상세분석리포트')}/>
                 <KakaoExternalReport id="kakao-external-report"
                   title={<><span style={{color:"#10B981"}}>KakaoTalk</span> CJ StatusBoard</>}
+                  multiInput={csvData?.data?.some(d=>d._generatedGroupTag)}
                   onContextMenu={openCtxMenuFor('kakao-external-report','카카오톡_외부집계리포트')}/>
+              </>
+            )}
+          </div>
+        )}
+
+
+        {/* ════ 대체문자 탭 ════ */}
+        {activeTab==='fallback' && (
+          <div className="tab-panel">
+
+            {!fallbackData && (
+              <div
+                style={{
+                  background:fallbackDrag?"#EEF2FF":"#fff", borderRadius:"24px",
+                  boxShadow:"0 4px 24px rgba(0,0,0,0.08)", padding:"2.5rem 2rem",
+                  border:fallbackDrag?"2px dashed #4F46E5":"2px solid transparent", transition:"all 0.2s",
+                }}
+                onDragOver={e=>{e.preventDefault();setFallbackDrag(true);}}
+                onDragLeave={e=>{e.preventDefault();setFallbackDrag(false);}}
+                onDrop={handleFallbackDrop}>
+                <p style={{margin:"0 0 6px",fontSize:"20px",fontWeight:"800",color:"#333D4B",letterSpacing:"-0.03em"}}>
+                  대체문자 성공 건수 분석
+                </p>
+                <p style={{margin:"0 0 20px",fontSize:"14px",color:"#8B95A1",lineHeight:1.6}}>
+                  CJ 메시지 발송 결과 CSV를 입력해 주세요. <span style={{color:"#C4C9D0"}}>(activity_name, channel1_f_code, channel2_f_code 컬럼 필수)</span>
+                </p>
+                <textarea className="paste-textarea" value={fallbackInput} onChange={e=>setFallbackInput(e.target.value)}
+                  placeholder={"\n예시:\n\nactivity_name,channel1_f_code,channel2_f_code\nSO Zipprix,8,00\nSO Zipprix,0,00\nSO Zipprix,B,0\n\n대체문자 성공 조건: channel1_f_code != 0 AND channel2_f_code == 0"}
+                  onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&fallbackInput.trim()){handleFallbackSubmit(fallbackInput.trim());}}}
+                  style={{backgroundColor:fallbackDrag?"#fff":"#FAFAFA",minHeight:"220px"}}/>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"14px"}}>
+                  <span style={{fontSize:"11px",color:"#C4C9D0"}}>Ctrl+Enter로 바로 분석</span>
+                  <button className="analyze-btn" onClick={()=>{if(fallbackInput.trim())handleFallbackSubmit(fallbackInput.trim());}} disabled={!fallbackInput.trim()}>분석하기</button>
+                </div>
+              </div>
+            )}
+
+            {fallbackData && (
+              <>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"20px"}}>
+                  <p style={{margin:0,fontSize:"18px",fontWeight:"800",color:"#333D4B"}}>대체문자 발송 성공 분석</p>
+                  <button className="retry-btn" onClick={resetFallback}>처음으로</button>
+                </div>
+
+                <FallbackSMSTable
+                  data={fallbackData.data}
+                  activities={fallbackActivities}
+                  selectedActivities={selectedFallbackActivities}
+                  onActivityToggle={toggleFallbackActivity}
+                  onSelectAll={()=>setSelectedFallbackActivities(fallbackActivities)}
+                  onResetActivities={()=>setSelectedFallbackActivities([])}
+                />
               </>
             )}
           </div>
