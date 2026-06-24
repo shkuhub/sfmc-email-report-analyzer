@@ -2123,7 +2123,7 @@ function App() {
                   CJ 메시지 발송 결과를 드래그 앤 드롭하세요. <span style={{color:"#C4C9D0"}}>(activity_name, channel1_f_code, channel2_f_code 컬럼 필수)</span>
                 </p>
                 <textarea className="paste-textarea" value={fallbackInput} onChange={e=>setFallbackInput(e.target.value)}
-                  placeholder={"\n예시:\n\nactivity_name,channel1_f_code,channel2_f_code\nSO Zipprix,8,00\nSO Zipprix,0,00\nSO Zipprix,B,0\n\n대체문자 성공 조건: channel1_f_code != 0 AND channel2_f_code == 0"}
+                  placeholder={"\n예시:\n\nactivity_name,channel1_f_code,channel2_f_code\nSO Zipprix,8,00\nSO Zipprix,0,00\nSO Zipprix,B,0\n대체문자 성공 조건: channel1_f_code != 0 AND channel2_f_code == 0"}
                   onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&fallbackInput.trim()){handleFallbackSubmit(fallbackInput.trim());}}}
                   style={{backgroundColor:fallbackDrag?"#fff":"#FAFAFA",minHeight:"220px"}}/>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"14px"}}>
