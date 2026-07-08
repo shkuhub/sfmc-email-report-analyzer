@@ -524,10 +524,16 @@ function aggregateFallbackSMSRowsByDate(data, selectedActivities) {
     const date = row._fallbackDate || getFallbackSMSDate(row) || '-';
     const key = `${activity}||${date}`;
     if (!groupMap.has(key)) {
-      groupMap.set(key, { activity, date, success: 0 });
+      groupMap.set(key, { activity, date, sendSuccess: 0, sendFail: 0, fallbackSuccess: 0 });
     }
-    if (row._fallbackSuccess) {
-      groupMap.get(key).success += 1;
+
+    if (isResultCodeZero(row.channel1_f_code)) {
+      groupMap.get(key).sendSuccess += 1;
+    } else if (isResultCodeNonZero(row.channel1_f_code)) {
+      groupMap.get(key).sendFail += 1;
+      if (isResultCodeZero(row.channel2_f_code)) {
+        groupMap.get(key).fallbackSuccess += 1;
+      }
     }
   });
 
@@ -538,9 +544,11 @@ function aggregateFallbackSMSRowsByDate(data, selectedActivities) {
   });
 
   const totals = rows.reduce((acc, row) => {
-    acc.success += row.success;
+    acc.sendSuccess += row.sendSuccess;
+    acc.sendFail += row.sendFail;
+    acc.fallbackSuccess += row.fallbackSuccess;
     return acc;
-  }, { success: 0 });
+  }, { sendSuccess: 0, sendFail: 0, fallbackSuccess: 0 });
 
   return { rows, totals };
 }
@@ -1474,15 +1482,20 @@ function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, 
   const tableId = `fallback-sms-table-${brandKey.toLowerCase()}`;
 
   const copyTotalSuccess = () => {
-    writeClipboardText(String(totals.success || 0), `${brandLabel} 대체문자 성공 합계가 복사되었습니다.`);
+    const values = [
+      totals.sendSuccess || 0,
+      totals.sendFail || 0,
+      totals.fallbackSuccess || 0,
+    ];
+    writeClipboardText(values.join("\t"), `${brandLabel} 발송 성공/실패 및 대체문자 성공 합계가 복사되었습니다.`);
   };
 
   const copyTable = () => {
     if (rows.length === 0) { alert("복사할 데이터가 없습니다."); return; }
     const lines = [
-      ["Activity Name", "일자", "대체문자 성공 수"].join("\t"),
-      ...rows.map(row => [row.activity, row.date, row.success].join("\t")),
-      ["전체 합계", "", totals.success].join("\t"),
+      ["Activity Name", "일자", "발송 성공 수", "발송 실패 수", "대체문자 성공 수"].join("\t"),
+      ...rows.map(row => [row.activity, row.date, row.sendSuccess, row.sendFail, row.fallbackSuccess].join("\t")),
+      ["전체 합계", "", totals.sendSuccess, totals.sendFail, totals.fallbackSuccess].join("\t"),
     ];
     writeClipboardText(lines.join("\n"), `${brandLabel} 대체문자 결과 표가 복사되었습니다.`);
   };
@@ -1492,19 +1505,8 @@ function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, 
       <div className="summary-header">
         <h3 className="summary-title">{title}</h3>
         <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
-          <button className="copy-btn" onClick={copyTotalSuccess}>성공 합계 복사</button>
+          <button className="copy-btn" onClick={copyTotalSuccess}>합계 복사</button>
           <button className="copy-btn" onClick={copyTable}>표 복사</button>
-        </div>
-      </div>
-
-      <div style={{display:"grid",gridTemplateColumns:"repeat(2, 1fr)",gap:"12px",marginBottom:"18px"}}>
-        <div style={{background:"#F9FAFB",border:"1px solid #E5E8EC",borderRadius:"14px",padding:"16px",textAlign:"center"}}>
-          <div style={{fontSize:"11px",fontWeight:"700",color:"#8B95A1",marginBottom:"6px"}}>선택 Activity</div>
-          <div style={{fontSize:"22px",fontWeight:"800",color:"#333D4B"}}>{fmt(selectedActivities.length)}</div>
-        </div>
-        <div style={{background:"#EEF2FF",border:"1px solid #C7D2FE",borderRadius:"14px",padding:"16px",textAlign:"center"}}>
-          <div style={{fontSize:"11px",fontWeight:"700",color:"#4F46E5",marginBottom:"6px"}}>대체문자 성공 수</div>
-          <div style={{fontSize:"22px",fontWeight:"800",color:"#4F46E5"}}>{fmt(totals.success)}</div>
         </div>
       </div>
 
@@ -1535,7 +1537,7 @@ function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, 
       </div>
 
       <div style={{fontSize:"11px",color:"#8B95A1",lineHeight:1.6,marginBottom:"14px"}}>
-        산정 조건: <strong>channel1_f_code ≠ 0</strong> AND <strong>channel2_f_code = 0</strong>. 
+        산정 조건: <strong>발송 성공</strong> = channel1_f_code = 0, <strong>발송 실패</strong> = channel1_f_code ≠ 0, <strong>대체문자 성공</strong> = channel1_f_code ≠ 0 AND channel2_f_code = 0. 
         0, 00, 000은 모두 성공 코드 0으로 처리합니다. 일자는 <strong>req_dt</strong> 기준이며, 값이 없으면 <strong>comp_dt</strong>를 사용합니다.
       </div>
 
@@ -1544,6 +1546,8 @@ function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, 
           <tr>
             <th>Activity Name</th>
             <th>일자</th>
+            <th>발송 성공 수</th>
+            <th>발송 실패 수</th>
             <th>대체문자 성공 수</th>
           </tr>
         </thead>
@@ -1552,18 +1556,22 @@ function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, 
             <tr key={`${row.activity}-${row.date}`}>
               <td className="bg-light" style={{textAlign:"left",whiteSpace:"normal",wordBreak:"break-word"}}>{row.activity}</td>
               <td>{row.date}</td>
-              <td style={{fontWeight:"800",color:"#4F46E5"}}>{fmt(row.success)}</td>
+              <td>{fmt(row.sendSuccess)}</td>
+              <td style={{fontWeight:"800",color:"#EF4444"}}>{fmt(row.sendFail)}</td>
+              <td style={{fontWeight:"800",color:"#4F46E5"}}>{fmt(row.fallbackSuccess)}</td>
             </tr>
           ))}
           {rows.length>0 ? (
             <tr className="bg-total">
               <td className="bg-total">전체 합계</td>
               <td className="bg-total"></td>
-              <td className="bg-total">{fmt(totals.success)}</td>
+              <td className="bg-total">{fmt(totals.sendSuccess)}</td>
+              <td className="bg-total">{fmt(totals.sendFail)}</td>
+              <td className="bg-total">{fmt(totals.fallbackSuccess)}</td>
             </tr>
           ) : (
             <tr>
-              <td colSpan="3" style={{padding:"28px",fontSize:"13px",color:"#8B95A1",textAlign:"center"}}>
+              <td colSpan="5" style={{padding:"28px",fontSize:"13px",color:"#8B95A1",textAlign:"center"}}>
                 Activity를 선택해주세요.
               </td>
             </tr>
@@ -2114,7 +2122,7 @@ function App() {
                 onDragLeave={e=>{e.preventDefault();setKakaoDrag(false);}}
                 onDrop={handleKakaoDrop}>
                 <p style={{margin:"0 0 6px",fontSize:"20px",fontWeight:"800",color:"#333D4B",letterSpacing:"-0.03em"}}>
-                  알림톡·브랜드메시지 발송 결과 분석
+                  알림톡·브랜드 메시지 발송 결과 분석
                 </p>
                 <p style={{margin:"0 0 20px",fontSize:"14px",color:"#8B95A1",lineHeight:1.6}}>
                   CSV 파일을 드래그 앤 드롭하세요. <span style={{color:"#C4C9D0"}}>(groupTag, date 컬럼 필수)</span>
@@ -2179,7 +2187,7 @@ function App() {
                   대체문자 성공 건수 분석
                 </p>
                 <p style={{margin:"0 0 20px",fontSize:"14px",color:"#8B95A1",lineHeight:1.6}}>
-                  CJ 메시지 발송 결과 파일을 드래그 앤 드롭하세요. <span style={{color:"#C4C9D0"}}>(activity_name, req_dt/comp_dt, channel1_f_code, channel2_f_code 컬럼 사용)</span>
+                  CJ 메시지 발송 결과 CSV를 입력해 주세요. <span style={{color:"#C4C9D0"}}>(activity_name, req_dt/comp_dt, channel1_f_code, channel2_f_code 컬럼 사용)</span>
                 </p>
                 <textarea className="paste-textarea" value={fallbackInput} onChange={e=>setFallbackInput(e.target.value)}
                   placeholder={"\n예시:\n\nactivity_name,req_dt,comp_dt,channel1_f_code,channel2_f_code\nSS Welcome Reminder OptIn,20260623093000,20260623093005,8,00\nAT Welcome New,20260623093000,20260623093005,0,00\nSS Welcome Reminder OptOut,20260623093000,20260623093005,B,0\n\n대체문자 성공 조건: channel1_f_code != 0 AND channel2_f_code == 0"}
