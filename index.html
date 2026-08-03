@@ -1,5 +1,9 @@
 <!DOCTYPE html>
 <!--
+  GP 리포트 분석기 v1.5.3
+  - eDM 성과 분석 리포트 제목 날짜를 From Date 기준으로 표시
+  - From Date 내 슬래시 주변 공백 및 줄바꿈이 포함된 원문 형식 지원
+  - From Date가 없거나 유효하지 않으면 제목 날짜 미표시
   GP 리포트 분석기 v1.5.2
   - 대체문자 성공 판정에 channel2 = LMS 조건 추가
   - 대체문자 성공 판정 로직을 isFallbackSuccessRow 함수로 통합
@@ -667,6 +671,11 @@ function parseReport(rawText) {
         /Last\s+Published\s+On\s*:\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{4}[^\n]*)/i,
         /Published\s+On\s*:\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{4}[^\n]*)/i,
     ]) || '';
+    const fromDateRaw = find([
+        /From\s+Date\s*:\s*([0-9]{4}\s*[-/.]\s*[0-9]{1,2}\s*[-/.]\s*[0-9]{1,2})/i,
+        /From\s+Date\s*:\s*([0-9]{1,2}\s*[-/.]\s*[0-9]{1,2}\s*[-/.]\s*[0-9]{4})/i,
+    ]) || '';
+    const fromDate = fromDateRaw.replace(/\s+/g, '');
     const totalSent = findNum([/Total\s+Sent\s*:\s*([0-9,]+)/i, /Total\s+Sent[^\d]+([0-9,]+)/i]);
     const delivered = findNum([/Delivered\s*:\s*([0-9,]+)/i, /Delivered\s+([0-9,]+)/i]);
     const drMatch = t.match(/Delivery\s+Rate\s*:\s*([0-9.]+)%/i);
@@ -710,7 +719,7 @@ function parseReport(rawText) {
     const didNotOpen = findNum([/Did\s+not\s+open\s+([0-9,]+)/i, /not\s+open[:\s]+([0-9,]+)/i]);
     const didNotClick = findNum([/Did\s+not\s+click\s+([0-9,]+)/i, /not\s+click[:\s]+([0-9,]+)/i]);
     return {
-        campaignName, publishedOn, totalSent, delivered, deliveryRate,
+        campaignName, publishedOn, fromDate, totalSent, delivered, deliveryRate,
         bounces: { total: bounceTotal, hard: bounceHard, soft: bounceSoft, block: bounceBlock },
         opens: { total: opensTotal, unique: opensUnique },
         clicks: { total: clicksTotal, unique: clicksUnique },
@@ -1858,9 +1867,9 @@ function App() {
     };
     const s = getSummaryData();
     const reportTitle = doneCount > 1
-        ? `통합 성과 분석 리포트 (리포트 ${doneCount}개 합산)`
+        ? `통합 성과 분석 리포트`
         : doneCount === 1
-            ? (toKoreanDate((_a = doneSlots[0].parsed) === null || _a === void 0 ? void 0 : _a.publishedOn) ? `eDM 성과 분석 리포트 (${toKoreanDate((_b = doneSlots[0].parsed) === null || _b === void 0 ? void 0 : _b.publishedOn)})` : "eDM 성과 분석 리포트")
+            ? (toKoreanDate((_a = doneSlots[0].parsed) === null || _a === void 0 ? void 0 : _a.fromDate) ? `eDM 성과 분석 리포트 (${toKoreanDate((_b = doneSlots[0].parsed) === null || _b === void 0 ? void 0 : _b.fromDate)})` : "eDM 성과 분석 리포트")
             : "eDM 성과 분석 리포트";
     const emptyCount = MAX_SLOTS - slots.length - (canAddMore ? 1 : 0);
     return (React.createElement("div", { style: { minHeight: "100vh", background: "#F2F4F6" } },
