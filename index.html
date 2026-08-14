@@ -1,5 +1,34 @@
 <!DOCTYPE html>
 <!--
+  GP 리포트 분석기 v1.7.5
+  - 월간 운영보고 탭을 다른 탭과 동일한 공통 컨테이너 내부로 이동하여 카드 너비와 상단 여백 통일
+  GP 리포트 분석기 v1.7.4
+  - 월간 대체문자 Excel 집계 기준 적용 (settings_name 정확 매핑, 결과 코드 원문 엄격 비교)
+  - 월간 운영보고 대체문자 성공 조건: channel1_f_code !== "0", channel2 = "LMS", channel2_f_code === "0"
+  - channel2_f_code의 "00", "000" 등은 성공 코드 "0"과 구분하여 집계 제외
+  - 월간 운영보고 결과 복사 시 미첨부 지표 열 제외
+  - 첨부된 파일로 생성된 지표만 원래 순서대로 복사
+  GP 리포트 분석기 v1.7.3
+  - 월간 운영보고 CSV 부분 업로드 및 누락 지표 공백 출력 지원
+  - 결과 상단 입력 영역 유지 및 누락 CSV 추가/기존 CSV 교체 지원
+  - 5개 CSV 전체 입력 시 v1.7.2 집계/복사 결과 유지
+  GP 리포트 분석기 v1.7.2
+  - 월간 운영보고 대체문자 성공 조건에 channel2 = LMS 추가
+  - 월간 대체문자 판정을 기존 대체문자 탭과 동일한 공통 함수로 통일
+  - 월간 대체문자 CSV 필수 컬럼 및 자동 분류 기준에 channel2 추가
+  GP 리포트 분석기 v1.7.1
+  - 먼슬리 대체문자/먼슬리 이메일을 월간 운영보고 탭으로 통합
+  - 대체문자 1개 + 이메일 4개 CSV 다중 선택/드래그 앤 드롭 자동 분류
+  - 브랜드별 대체문자·이메일 12종 통합표 및 12x6 TSV 복사 지원
+  GP 리포트 분석기 v1.7.0
+  - 먼슬리 대체문자 settings_name 상세 결과 접기/펼치기 추가
+  - SS/AT Email Send Sum 및 Conversion Tracking CSV 4개 월간 집계 추가
+  - 이메일 지표를 원본 컬럼명 기준으로 집계하고 브랜드별 12x5 TSV 복사 지원
+  - Campaign 미매핑 항목 확인 UI 추가
+  GP 리포트 분석기 v1.6.0
+  - 먼슬리 대체문자 탭 및 브랜드/settings_name별 성공 건수 집계 추가
+  - Excel 대상 Campaign 12종 매핑 및 브랜드별 세로 복사 지원
+  - settings_name에 TEST 또는 UAT가 포함된 행 집계 제외
   GP 리포트 분석기 v1.5.3
   - eDM 성과 분석 리포트 제목 날짜를 From Date 기준으로 표시
   - From Date 내 슬래시 주변 공백 및 줄바꿈이 포함된 원문 형식 지원
@@ -617,6 +646,485 @@ function aggregateFallbackSMSRowsByDate(data, selectedActivities) {
         return acc;
     }, { sendSuccess: 0, sendFail: 0, fallbackSuccess: 0 });
     return { rows, totals };
+}
+
+const MONTHLY_FALLBACK_CAMPAIGNS = [
+    'Abandon Browse',
+    'Abandon Cart',
+    'Enhanced Abandon Cart',
+    'First Purchase',
+    'Review',
+    'Welcome New',
+    'Welcome New Reminder',
+    'Welcome Tier',
+    'Encourage to next tier',
+    'Tier downgrade',
+    'Birthday',
+    'In-stock',
+];
+function normalizeMonthlyBrandValue(value) {
+    return String(value !== null && value !== void 0 ? value : '').trim().toUpperCase().replace(/[\s_\-]/g, '');
+}
+function getMonthlyFallbackBrand(row) {
+    const brandFields = ['brand', 'brand_name', 'brandName', 'brand_code', 'brandCode'];
+    for (const field of brandFields) {
+        const value = normalizeMonthlyBrandValue(row[field]);
+        if (['SS', 'SO', 'SAMSONITE', '쌤소나이트'].includes(value))
+            return 'SS';
+        if (['AT', 'AMERICANTOURISTER', '아메리칸투어리스트'].includes(value))
+            return 'AT';
+    }
+    const settingsName = String(row.settings_name || '').trim();
+    if (/(^|[_\s-])(SS|SO)([_\s-]|$)/i.test(settingsName))
+        return 'SS';
+    if (/(^|[_\s-])AT([_\s-]|$)/i.test(settingsName))
+        return 'AT';
+    if (/^New Journey\s*-\s*\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*(오전|오후)\s*\d{1,2}[.:]\d{2}$/i.test(settingsName))
+        return 'SS';
+    return '미분류';
+}
+function normalizeMonthlyCampaignName(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9가-힣]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+const MONTHLY_FALLBACK_EXCEL_SETTINGS = new Map([
+    ['Journey_24022025_Abandoned_Browse_SS_KR', { brand: 'SS', campaign: 'Abandon Browse' }],
+    ['Journey_24022025_Abandoned_Cart_SS_KR', { brand: 'SS', campaign: 'Abandon Cart' }],
+    ['Journey_24022025_Special_offer_for_the_1stpurchase_SS_KR', { brand: 'SS', campaign: 'First Purchase' }],
+    ['Journey_27022025_Review_Send_SS_KR', { brand: 'SS', campaign: 'Review' }],
+    ['Journey_27022025_Welcome New_SS_KR', { brand: 'SS', campaign: 'Welcome New' }],
+    ['New Journey - 2026년 5월 28일 오전 11.04', { brand: 'SS', campaign: 'Welcome New Reminder' }],
+    ['Journey_26022025_Welcome_Tier_SS_KR', { brand: 'SS', campaign: 'Welcome Tier' }],
+    ['Journey_26022025_Encourage_to_next tier_SS_KR', { brand: 'SS', campaign: 'Encourage to next tier' }],
+    ['Journey_26022025_Tierdowngrade_SS_KR', { brand: 'SS', campaign: 'Tier downgrade' }],
+    ['Journey_26022025_Birthday_SS_KR', { brand: 'SS', campaign: 'Birthday' }],
+    ['Journey_24022025_Back_In_Stock_Send_SS_KR', { brand: 'SS', campaign: 'In-stock' }],
+    ['Journey_27022025_Abandoned_Browse_AT_KR', { brand: 'AT', campaign: 'Abandon Browse' }],
+    ['Journey_24022025_Abandoned_Cart_AT_KR', { brand: 'AT', campaign: 'Abandon Cart' }],
+    ['Journey_24022025_Special_offer_for_the_1stpurchase_AT_KR', { brand: 'AT', campaign: 'First Purchase' }],
+    ['Journey_27022025_Review_Send_AT_KR', { brand: 'AT', campaign: 'Review' }],
+    ['Journey_24022025_Welcome_New_AT_KR', { brand: 'AT', campaign: 'Welcome New' }],
+    ['Journey_00002026_Campaign_Automatic_WelcomeReminder_Kakao_AT_KR', { brand: 'AT', campaign: 'Welcome New Reminder' }],
+    ['Journey_27022025_Welcome_Tier_AT_KR', { brand: 'AT', campaign: 'Welcome Tier' }],
+    ['Journey_27022025_Encourage_to_next tier_AT_KR', { brand: 'AT', campaign: 'Encourage to next tier' }],
+    ['Journey_27022025_Tierdowngrade_AT_KR', { brand: 'AT', campaign: 'Tier downgrade' }],
+    ['Journey_26022025_Birthday_AT_KR', { brand: 'AT', campaign: 'Birthday' }],
+]);
+function getMonthlyFallbackExcelMapping(settingsName) {
+    return MONTHLY_FALLBACK_EXCEL_SETTINGS.get(String(settingsName || '').trim()) || null;
+}
+function isMonthlyFallbackSuccessRow(row) {
+    const channel1Code = String(row.channel1_f_code == null ? '' : row.channel1_f_code).trim();
+    const channel2Code = String(row.channel2_f_code == null ? '' : row.channel2_f_code).trim();
+    // 월간 운영보고의 Excel 집계 기준은 결과 코드의 원문 문자열을 엄격하게 비교한다.
+    // channel1_f_code는 정확히 "0"인 행만 1차 성공이므로 대체문자 대상에서 제외한다.
+    // channel2_f_code는 정확히 "0"인 행만 대체문자 성공이며, "00"/"000"은 제외한다.
+    return channel1Code !== '' && channel1Code !== '0'
+        && String(row.channel2 || '').trim().toUpperCase() === 'LMS'
+        && channel2Code === '0';
+}
+function mapMonthlyFallbackCampaign(settingsName) {
+    const mapping = getMonthlyFallbackExcelMapping(settingsName);
+    return mapping ? mapping.campaign : null;
+}
+function parseMonthlyFallbackCSV(text) {
+    const normalized = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    const lines = normalized.split('\n').filter(line => line.trim() !== '');
+    if (lines.length < 2)
+        return { error: 'CSV 데이터가 비어 있거나 헤더/본문 행이 부족합니다.' };
+    const headers = parseCSVLine(lines[0]).map(h => h.replace(/^\uFEFF/, '').trim());
+    const requiredHeaders = ['settings_name', 'cid', 'channel2', 'channel1_f_code', 'channel2_f_code'];
+    const missing = requiredHeaders.filter(h => !headers.includes(h));
+    if (missing.length > 0)
+        return { error: `필수 컬럼이 없습니다: ${missing.join(', ')}` };
+    const allRows = lines.slice(1).map((line, lineIndex) => {
+        const values = parseCSVLine(line);
+        const row = { _rowNumber: lineIndex + 2 };
+        headers.forEach((h, i) => { row[h] = values[i] !== undefined ? String(values[i]).trim() : ''; });
+        return row;
+    }).filter(row => row.settings_name);
+    if (allRows.length === 0)
+        return { error: 'settings_name 값이 있는 데이터 행이 없습니다.' };
+    const excludedRows = allRows.filter(row => /(TEST|UAT)/i.test(row.settings_name));
+    const sourceRows = allRows.filter(row => !/(TEST|UAT)/i.test(row.settings_name)).map(row => {
+        const excelMapping = getMonthlyFallbackExcelMapping(row.settings_name);
+        row._monthlyFallbackSuccess = isMonthlyFallbackSuccessRow(row);
+        row._monthlyBrand = excelMapping ? excelMapping.brand : getMonthlyFallbackBrand(row);
+        row._monthlyCampaign = excelMapping ? excelMapping.campaign : null;
+        return row;
+    });
+    if (sourceRows.length === 0)
+        return { error: 'TEST 또는 UAT 제외 후 집계할 데이터가 없습니다.' };
+    const successRows = sourceRows.filter(row => row._monthlyFallbackSuccess);
+    if (successRows.length === 0)
+        return { error: '대체문자 성공 조건(channel1_f_code ≠ 0, channel2 = LMS, channel2_f_code = 0)에 해당하는 데이터가 없습니다.' };
+    const detailMap = new Map();
+    successRows.forEach(row => {
+        const key = `${row._monthlyBrand}||${row.settings_name}`;
+        if (!detailMap.has(key))
+            detailMap.set(key, { brand: row._monthlyBrand, settingsName: row.settings_name, cid: 0, campaign: row._monthlyCampaign });
+        detailMap.get(key).cid += 1;
+    });
+    const brandOrder = { SS: 0, AT: 1, '미분류': 2 };
+    const detailRows = Array.from(detailMap.values()).sort((a, b) => ((brandOrder[a.brand] !== undefined ? brandOrder[a.brand] : 9) - (brandOrder[b.brand] !== undefined ? brandOrder[b.brand] : 9)) || a.settingsName.localeCompare(b.settingsName, 'ko'));
+    const mappedSuccessRows = successRows.filter(row => row._monthlyCampaign && (row._monthlyBrand === 'SS' || row._monthlyBrand === 'AT'));
+    const summary = mappedSuccessRows.reduce((acc, row) => {
+        acc.total += 1;
+        if (row._monthlyBrand === 'SS')
+            acc.ss += 1;
+        else if (row._monthlyBrand === 'AT')
+            acc.at += 1;
+        return acc;
+    }, { total: 0, ss: 0, at: 0, unclassified: 0 });
+    summary.unclassified = successRows.length - mappedSuccessRows.length;
+    const buildExcelRows = (brand) => {
+        const campaignCounts = new Map();
+        mappedSuccessRows.filter(row => row._monthlyBrand === brand).forEach(row => {
+            campaignCounts.set(row._monthlyCampaign, (campaignCounts.get(row._monthlyCampaign) || 0) + 1);
+        });
+        return MONTHLY_FALLBACK_CAMPAIGNS.map(campaign => ({ campaign, cid: campaignCounts.has(campaign) ? campaignCounts.get(campaign) : '-' }));
+    };
+    const unmappedSettings = [...new Set(successRows.filter(row => !row._monthlyCampaign).map(row => row.settings_name))].sort((a, b) => a.localeCompare(b, 'ko'));
+    return {
+        type: 'MONTHLY_FALLBACK_CSV', sourceRows, successRows, detailRows, summary,
+        excelSS: buildExcelRows('SS'), excelAT: buildExcelRows('AT'), unmappedSettings,
+        excludedCount: excludedRows.length,
+    };
+}
+
+const MONTHLY_EMAIL_CAMPAIGNS = [...MONTHLY_FALLBACK_CAMPAIGNS];
+const MONTHLY_EMAIL_REQUIRED_SLOTS = ['ssSend', 'ssConversion', 'atSend', 'atConversion'];
+function normalizeEmailMatchName(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9가-힣]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function mapEmailSendCampaign(name, brand) {
+    const value = normalizeEmailMatchName(name);
+    if (!value)
+        return null;
+    // 템플릿에서 최종 12종에 반영하지 않는 Referral/일회성 프로모션은 명시적으로 제외한다.
+    if (/\breferral\b/.test(value) || /\bsummer sales\b/.test(value)
+        || /\bnexis\b/.test(value) || /\bcraign?karl\b/.test(value))
+        return null;
+    const rules = [
+        ['Enhanced Abandon Cart', /\benhanced abandon(?:ed)? cart\b/],
+        ['Welcome New Reminder', /\bwelcome new reminder\b/],
+        ['Encourage to next tier', /\bencourage to next tier\b/],
+        ['Tier downgrade', /\btier\s*down\s*grade\b|\btierdowngrade\b/],
+        ['Abandon Browse', /\babandon(?:ed)? browse\b|\babandon browser\b/],
+        ['Abandon Cart', /\babandon(?:ed)? cart\b/],
+        ['First Purchase', /\bspecial offer for the 1st\s*purchase\b|\b1st purchase\b|\bfirst purchase\b/],
+        ['Review', /\breview send\b|\breview\b/],
+        ['Welcome New', /\bwelcome new\b/],
+        ['Welcome Tier', /\bwelcome tier\b/],
+        ['Birthday', /\bbirthday\b/],
+        ['In-stock', /\bback in stock send\b|\bin stock\b|\binstock\b/],
+    ];
+    const matched = rules.find(([, pattern]) => pattern.test(value));
+    return matched ? matched[0] : null;
+}
+function mapEmailConversionCampaign(name, brand) {
+    const value = normalizeEmailMatchName(name);
+    if (!value)
+        return null;
+    // 첨부 월간 운영보고서의 현재 연결을 정확히 재현한다.
+    // SS Enhanced Abandon Cart 전환은 Craig & Karl EmailName에 연결되어 있으며,
+    // 'SO Enhanced Abandon Cart 2nd'는 템플릿 최종 12종 결과에서 제외되어 있다.
+    if (brand === 'SS' && value === 'journey 02072026 campaign automatic craignkarl kr')
+        return 'Enhanced Abandon Cart';
+    if (brand === 'SS' && value === 'so enhanced abandon cart 2nd')
+        return null;
+    if (brand === 'AT' && value === 'at enhanced abandon cart 2nd')
+        return 'Enhanced Abandon Cart';
+    // 템플릿에서 제외되는 프로모션/Referral 계열은 유사 문자열로 추정 매핑하지 않는다.
+    if (/\breferral\b/.test(value) || /\bsummer sales\b/.test(value)
+        || /\bnexis\b/.test(value) || /\bcraign?karl\b/.test(value))
+        return null;
+    const rules = [
+        ['Enhanced Abandon Cart', /\benhanced abandon(?:ed)? cart\b/],
+        ['Welcome New Reminder', /\bwelcome new reminder\b/],
+        ['Encourage to next tier', /\bencourage to next tier\b/],
+        ['Tier downgrade', /\btier\s*down\s*grade\b|\btierdowngrade\b/],
+        ['Abandon Browse', /\babandon(?:ed)? browse\b|\babandon browser\b/],
+        ['Abandon Cart', /\babandon(?:ed)? cart\b/],
+        ['First Purchase', /\b1st purchase\b|\bfirst purchase\b/],
+        ['Review', /\breview\b/],
+        ['Welcome New', /\bwelcome new\b/],
+        ['Welcome Tier', /\bwelcome tier\b/],
+        ['Birthday', /\bbirthday\b/],
+        ['In-stock', /\bback in stock send\b|\bin stock\b|\binstock\b/],
+    ];
+    const matched = rules.find(([, pattern]) => pattern.test(value));
+    return matched ? matched[0] : null;
+}
+function normalizeEmailCSVText(text) {
+    return String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+function parseEmailNumber(value, rowNumber, fieldName) {
+    const raw = String(value !== null && value !== void 0 ? value : '').trim();
+    if (!raw)
+        return { error: `${rowNumber}행 ${fieldName} 값이 비어 있습니다.` };
+    const normalized = raw.replace(/,/g, '').replace(/[₩$\s]/g, '');
+    const number = Number(normalized);
+    if (!Number.isFinite(number))
+        return { error: `${rowNumber}행 ${fieldName} 숫자 변환에 실패했습니다: ${raw}` };
+    return { value: number };
+}
+function detectEmailBrand(values) {
+    let ss = 0;
+    let at = 0;
+    values.forEach(value => {
+        const raw = String(value || '');
+        if (/samsonite/i.test(raw) || /(^|[_\s-])(SS|SO)([_\s-]|KR|$)/i.test(raw))
+            ss += 1;
+        if (/american\s*tourister/i.test(raw) || /(^|[_\s-])AT([_\s-]|KR|$)/i.test(raw))
+            at += 1;
+    });
+    if (ss > 0 && at === 0)
+        return 'SS';
+    if (at > 0 && ss === 0)
+        return 'AT';
+    return null;
+}
+function parseEmailSendSumCSV(text) {
+    const lines = normalizeEmailCSVText(text).split('\n').filter(line => line.trim() !== '');
+    if (lines.length < 2)
+        return { error: '빈 파일이거나 데이터 행이 없습니다.' };
+    const headers = parseCSVLine(lines[0]).map(value => value.replace(/^\uFEFF/, '').trim());
+    const required = ['Journey_Name', 'Total_Delivered', 'Total_Opens', 'Total_Clicks'];
+    const missing = required.filter(name => !headers.includes(name));
+    if (missing.length > 0)
+        return { error: `Email Send Sum 필수 컬럼이 없습니다: ${missing.join(', ')}` };
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const values = parseCSVLine(lines[i]);
+        const raw = {};
+        headers.forEach((header, index) => { raw[header] = values[index] !== undefined ? String(values[index]).trim() : ''; });
+        if (!raw.Journey_Name)
+            continue;
+        const delivered = parseEmailNumber(raw.Total_Delivered, i + 1, 'Total_Delivered');
+        const opens = parseEmailNumber(raw.Total_Opens, i + 1, 'Total_Opens');
+        const clicks = parseEmailNumber(raw.Total_Clicks, i + 1, 'Total_Clicks');
+        const failed = [delivered, opens, clicks].find(result => result.error);
+        if (failed)
+            return { error: failed.error };
+        rows.push({ journeyName: raw.Journey_Name, delivered: delivered.value, opens: opens.value, clicks: clicks.value });
+    }
+    if (rows.length === 0)
+        return { error: 'Email Send Sum에 Journey_Name 데이터 행이 없습니다.' };
+    return { type: 'EMAIL_SEND_SUM', rows, detectedBrand: detectEmailBrand(rows.map(row => row.journeyName)) };
+}
+function parseEmailConversionCSV(text) {
+    const lines = normalizeEmailCSVText(text).split('\n');
+    const headerIndex = lines.findIndex(line => {
+        if (!line.trim())
+            return false;
+        const values = parseCSVLine(line);
+        return String(values[0] || '').replace(/^\uFEFF/, '').trim() === 'AccountName';
+    });
+    if (headerIndex < 0)
+        return { error: 'Email Conversion Tracking의 실제 데이터 헤더(AccountName)를 찾을 수 없습니다.' };
+    const headers = parseCSVLine(lines[headerIndex]).map(value => value.replace(/^\uFEFF/, '').trim());
+    const required = ['EmailName', 'ConversionItemName', 'Amount'];
+    const missing = required.filter(name => !headers.includes(name));
+    if (missing.length > 0)
+        return { error: `Email Conversion Tracking 필수 컬럼이 없습니다: ${missing.join(', ')}` };
+    const rows = [];
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+        if (!lines[i].trim())
+            continue;
+        const values = parseCSVLine(lines[i]);
+        const raw = {};
+        headers.forEach((header, index) => { raw[header] = values[index] !== undefined ? String(values[index]).trim() : ''; });
+        if (!raw.EmailName && !raw.ConversionItemName && !raw.Amount)
+            continue;
+        if (!raw.EmailName)
+            return { error: `${i + 1}행 EmailName 값이 비어 있습니다.` };
+        const amount = parseEmailNumber(raw.Amount, i + 1, 'Amount');
+        if (amount.error)
+            return { error: amount.error };
+        rows.push({ accountName: raw.AccountName, emailName: raw.EmailName, conversionItemName: raw.ConversionItemName, amount: amount.value });
+    }
+    if (rows.length === 0)
+        return { error: 'Email Conversion Tracking에 데이터 행이 없습니다.' };
+    return { type: 'EMAIL_CONVERSION_TRACKING', rows, detectedBrand: detectEmailBrand(rows.map(row => row.accountName)) };
+}
+function createMonthlyEmailMetricMap() {
+    return new Map(MONTHLY_EMAIL_CAMPAIGNS.map(campaign => [campaign, {
+        campaign, delivered: 0, opens: 0, clicks: 0, conversions: 0, revenue: 0,
+    }]));
+}
+function aggregateEmailSend(rows, brand) {
+    const metrics = createMonthlyEmailMetricMap();
+    const unmapped = new Set();
+    rows.forEach(row => {
+        const campaign = mapEmailSendCampaign(row.journeyName, brand);
+        if (!campaign) {
+            unmapped.add(row.journeyName);
+            return;
+        }
+        const target = metrics.get(campaign);
+        target.delivered += row.delivered;
+        target.opens += row.opens;
+        target.clicks += row.clicks;
+    });
+    return { metrics, unmapped: [...unmapped] };
+}
+function aggregateEmailConversions(rows, brand) {
+    const metrics = createMonthlyEmailMetricMap();
+    const unmapped = new Set();
+    const unsupportedItems = new Set();
+    rows.forEach(row => {
+        const campaign = mapEmailConversionCampaign(row.emailName, brand);
+        if (!campaign) {
+            unmapped.add(row.emailName);
+            return;
+        }
+        const target = metrics.get(campaign);
+        if (row.conversionItemName === 'Total Orders')
+            target.conversions += row.amount;
+        else if (row.conversionItemName === 'Total Revenue')
+            target.revenue += row.amount;
+        else
+            unsupportedItems.add(row.conversionItemName || '(빈 값)');
+    });
+    return { metrics, unmapped: [...unmapped], unsupportedItems: [...unsupportedItems] };
+}
+function buildMonthlyEmailRows(sendData, conversionData, brand) {
+    const send = aggregateEmailSend(sendData.rows, brand);
+    const conversion = aggregateEmailConversions(conversionData.rows, brand);
+    const rows = MONTHLY_EMAIL_CAMPAIGNS.map(campaign => {
+        const sendMetric = send.metrics.get(campaign);
+        const conversionMetric = conversion.metrics.get(campaign);
+        return {
+            brand, campaign,
+            delivered: sendMetric.delivered,
+            opens: sendMetric.opens,
+            clicks: sendMetric.clicks,
+            conversions: conversionMetric.conversions,
+            revenue: conversionMetric.revenue,
+        };
+    });
+    const unmapped = [
+        ...send.unmapped.map(rawName => ({ brand, dataType: 'Send Sum', rawName })),
+        ...conversion.unmapped.map(rawName => ({ brand, dataType: 'Conversion', rawName })),
+    ];
+    return { rows, unmapped, unsupportedItems: conversion.unsupportedItems };
+}
+function buildMonthlyEmailData(files) {
+    const ss = buildMonthlyEmailRows(files.ssSend.parsed, files.ssConversion.parsed, 'SS');
+    const at = buildMonthlyEmailRows(files.atSend.parsed, files.atConversion.parsed, 'AT');
+    const brandOrder = { SS: 0, AT: 1 };
+    const typeOrder = { 'Send Sum': 0, Conversion: 1 };
+    const unmapped = [...ss.unmapped, ...at.unmapped].sort((a, b) =>
+        brandOrder[a.brand] - brandOrder[b.brand]
+        || typeOrder[a.dataType] - typeOrder[b.dataType]
+        || a.rawName.localeCompare(b.rawName, 'ko'));
+    return {
+        type: 'MONTHLY_EMAIL',
+        ssRows: ss.rows,
+        atRows: at.rows,
+        unmapped,
+        unsupportedItems: [...new Set([...ss.unsupportedItems, ...at.unsupportedItems])].sort(),
+    };
+}
+function buildMonthlyEmailClipboard(rows) {
+    return rows.map(row => [row.delivered, row.opens, row.clicks, row.conversions, row.revenue]
+        .map(value => String(Number.isFinite(value) ? value : 0)).join('\t')).join('\n');
+}
+const MONTHLY_OPERATION_REQUIRED_SLOTS = ['monthlyFallback', ...MONTHLY_EMAIL_REQUIRED_SLOTS];
+const MONTHLY_OPERATION_SLOT_LABELS = {
+    monthlyFallback: '월간 대체문자',
+    ssSend: 'SS Email Send Sum',
+    ssConversion: 'SS Email Conversion Tracking',
+    atSend: 'AT Email Send Sum',
+    atConversion: 'AT Email Conversion Tracking',
+};
+function classifyMonthlyOperationCSV(text) {
+    const normalized = normalizeEmailCSVText(text);
+    const firstLine = normalized.split('\n').find(line => line.trim()) || '';
+    const firstHeaders = parseCSVLine(firstLine).map(value => String(value || '').replace(/^\uFEFF/, '').trim());
+    if (['settings_name', 'cid', 'channel2', 'channel1_f_code', 'channel2_f_code'].every(name => firstHeaders.includes(name))) {
+        const parsed = parseMonthlyFallbackCSV(normalized);
+        return parsed && !parsed.error ? { slotKey: 'monthlyFallback', parsed } : { error: parsed && parsed.error ? parsed.error : '월간 대체문자 CSV를 해석할 수 없습니다.' };
+    }
+    if (['Journey_Name', 'Total_Delivered', 'Total_Opens', 'Total_Clicks'].every(name => firstHeaders.includes(name))) {
+        const parsed = parseEmailSendSumCSV(normalized);
+        if (parsed.error) return { error: parsed.error };
+        if (!parsed.detectedBrand) return { error: 'Email Send Sum CSV에서 SS/AT 브랜드를 명확히 판별할 수 없습니다.' };
+        return { slotKey: parsed.detectedBrand === 'SS' ? 'ssSend' : 'atSend', parsed };
+    }
+    const parsed = parseEmailConversionCSV(normalized);
+    if (parsed && !parsed.error) {
+        if (!parsed.detectedBrand) return { error: 'Email Conversion CSV에서 SS/AT 브랜드를 명확히 판별할 수 없습니다.' };
+        return { slotKey: parsed.detectedBrand === 'SS' ? 'ssConversion' : 'atConversion', parsed };
+    }
+    return { error: '지원하는 5개 CSV 중 어떤 형식인지 판별할 수 없습니다.' };
+}
+function buildMonthlyOperationRows(fallbackRows, emailRows) {
+    const fallbackMap = new Map(fallbackRows.map(row => [row.campaign, row.cid]));
+    return emailRows.map(row => ({ ...row, fallbackSuccess: fallbackMap.has(row.campaign) ? fallbackMap.get(row.campaign) : '-' }));
+}
+function buildMonthlyOperationData(files) {
+    const fallback = files.monthlyFallback && files.monthlyFallback.parsed ? files.monthlyFallback.parsed : null;
+    const buildPartialBrand = (brand, sendKey, conversionKey, fallbackRows) => {
+        const sendData = files[sendKey] && files[sendKey].parsed ? files[sendKey].parsed : null;
+        const conversionData = files[conversionKey] && files[conversionKey].parsed ? files[conversionKey].parsed : null;
+        const send = sendData ? aggregateEmailSend(sendData.rows, brand) : null;
+        const conversion = conversionData ? aggregateEmailConversions(conversionData.rows, brand) : null;
+        const fallbackMap = fallbackRows ? new Map(fallbackRows.map(row => [row.campaign, row.cid])) : null;
+        const rows = MONTHLY_EMAIL_CAMPAIGNS.map(campaign => {
+            const sendMetric = send ? send.metrics.get(campaign) : null;
+            const conversionMetric = conversion ? conversion.metrics.get(campaign) : null;
+            return {
+                brand, campaign,
+                fallbackSuccess: fallbackMap ? (fallbackMap.has(campaign) ? fallbackMap.get(campaign) : '-') : null,
+                delivered: sendMetric ? sendMetric.delivered : null,
+                opens: sendMetric ? sendMetric.opens : null,
+                clicks: sendMetric ? sendMetric.clicks : null,
+                conversions: conversionMetric ? conversionMetric.conversions : null,
+                revenue: conversionMetric ? conversionMetric.revenue : null,
+            };
+        });
+        return {
+            rows,
+            unmapped: [
+                ...(send ? send.unmapped.map(rawName => ({ brand, dataType: 'Send Sum', rawName })) : []),
+                ...(conversion ? conversion.unmapped.map(rawName => ({ brand, dataType: 'Conversion', rawName })) : []),
+            ],
+            unsupportedItems: conversion ? conversion.unsupportedItems : [],
+        };
+    };
+    const ss = buildPartialBrand('SS', 'ssSend', 'ssConversion', fallback ? fallback.excelSS : null);
+    const at = buildPartialBrand('AT', 'atSend', 'atConversion', fallback ? fallback.excelAT : null);
+    const brandOrder = { SS: 0, AT: 1 };
+    const typeOrder = { 'Send Sum': 0, Conversion: 1 };
+    const unmapped = [...ss.unmapped, ...at.unmapped].sort((a, b) =>
+        brandOrder[a.brand] - brandOrder[b.brand]
+        || typeOrder[a.dataType] - typeOrder[b.dataType]
+        || a.rawName.localeCompare(b.rawName, 'ko'));
+    const email = {
+        type: 'MONTHLY_EMAIL',
+        ssRows: ss.rows,
+        atRows: at.rows,
+        unmapped,
+        unsupportedItems: [...new Set([...ss.unsupportedItems, ...at.unsupportedItems])].sort(),
+    };
+    return {
+        type: 'MONTHLY_OPERATION',
+        fallback,
+        email,
+        ssRows: ss.rows,
+        atRows: at.rows,
+    };
+}
+function buildMonthlyOperationClipboard(rows) {
+    const metricKeys = ['fallbackSuccess', 'delivered', 'opens', 'clicks', 'conversions', 'revenue'];
+    const includedKeys = metricKeys.filter(key => rows.some(row => row[key] !== null && row[key] !== undefined));
+    const text = rows.map(row => includedKeys
+        .map(key => {
+            const value = row[key];
+            return value === '-' ? '-' : String(Number.isFinite(value) ? value : 0);
+        }).join('\t')).join('\n');
+    return { text, columnCount: includedKeys.length };
 }
 function mergeReports(reports) {
     function sumNull(...vals) {
@@ -1600,6 +2108,407 @@ function FallbackSMSBrandTable({ brandKey, title, brandLabel, data, activities, 
                     React.createElement("td", { className: "bg-total" }, fmt(totals.fallbackSuccess)))) : (React.createElement("tr", null,
                     React.createElement("td", { colSpan: "5", style: { padding: "28px", fontSize: "13px", color: "#8B95A1", textAlign: "center" } }, "Activity\uB97C \uC120\uD0DD\uD574\uC8FC\uC138\uC694.")))))));
 }
+function MonthlyFallbackExcelTable({
+  title,
+  rows,
+  brandLabel
+}) {
+  const copyValues = () => {
+    writeClipboardText(rows.map(row => row.cid).join('\n'), `${brandLabel} 결과가 세로 방향으로 복사되었습니다.`);
+  };
+  return React.createElement("div", {
+    style: {
+      background: '#fff',
+      padding: '24px',
+      borderRadius: '20px',
+      boxShadow: '0 2px 16px rgba(0,0,0,0.07)',
+      marginBottom: '24px'
+    }
+  }, React.createElement("div", {
+    className: "summary-header"
+  }, React.createElement("h3", {
+    className: "summary-title"
+  }, title), React.createElement("button", {
+    className: "copy-btn",
+    onClick: copyValues
+  }, brandLabel, " \uACB0\uACFC \uBCF5\uC0AC")), React.createElement("table", {
+    className: "stable",
+    style: {
+      marginBottom: 0
+    }
+  }, React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", null, "Campaign Name"), React.createElement("th", null, "cid"))), React.createElement("tbody", null, rows.map(row => React.createElement("tr", {
+    key: row.campaign
+  }, React.createElement("td", {
+    className: "bg-light",
+    style: {
+      textAlign: 'left'
+    }
+  }, row.campaign), React.createElement("td", {
+    style: {
+      fontWeight: '700',
+      color: row.cid === '-' ? '#8B95A1' : '#4F46E5'
+    }
+  }, typeof row.cid === 'number' ? fmt(row.cid) : row.cid))))));
+}
+function MonthlyFallbackResult({
+  data
+}) {
+  const [showSettingsDetail, setShowSettingsDetail] = useState(false);
+  useEffect(() => setShowSettingsDetail(false), [data]);
+  const cards = [['전체 cid', data.summary.total, '#333D4B', '#F9FAFB', '#E5E8EC'], ['SS cid', data.summary.ss, '#2563EB', '#EFF6FF', '#BFDBFE'], ['AT cid', data.summary.at, '#C53030', '#FEF2F2', '#FECACA'], ['미분류 cid', data.summary.unclassified, '#8B95A1', '#F9FAFB', '#E5E8EC']];
+  return React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(4, 1fr)',
+      gap: '12px',
+      marginBottom: '24px'
+    }
+  }, cards.map(([label, value, color, background, border]) => React.createElement("div", {
+    key: label,
+    style: {
+      background,
+      border: `1px solid ${border}`,
+      borderRadius: '14px',
+      padding: '16px',
+      textAlign: 'center'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: '11px',
+      fontWeight: '700',
+      color: '#8B95A1',
+      marginBottom: '6px'
+    }
+  }, label), React.createElement("div", {
+    style: {
+      fontSize: '22px',
+      fontWeight: '800',
+      color
+    }
+  }, fmt(value))))), (data.summary.unclassified > 0 || data.unmappedSettings.length > 0) && React.createElement("div", {
+    style: {
+      background: '#FFFBEB',
+      border: '1px solid #FDE68A',
+      borderRadius: '14px',
+      padding: '14px 16px',
+      marginBottom: '20px',
+      fontSize: '12px',
+      color: '#92400E',
+      lineHeight: 1.7
+    }
+  }, data.summary.unclassified > 0 && React.createElement("div", null, "\uBE0C\uB79C\uB4DC\uB97C \uD310\uBCC4\uD560 \uC218 \uC5C6\uB294 cid\uAC00 ", fmt(data.summary.unclassified), "\uAC74 \uC788\uC2B5\uB2C8\uB2E4. \uC0C1\uC138 \uC9D1\uACC4\uD45C\uC5D0\uC11C \uD655\uC778\uD574 \uC8FC\uC138\uC694."), data.unmappedSettings.length > 0 && React.createElement("div", null, "Campaign Name \uBBF8\uB9E4\uD551 settings_name\uC774 ", fmt(data.unmappedSettings.length), "\uAC1C \uC788\uC2B5\uB2C8\uB2E4. \uD574\uB2F9 \uAC12\uC740 Excel \uBD99\uC5EC\uB123\uAE30 \uC9D1\uACC4\uC5D0 \uD3EC\uD568\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.")), React.createElement("div", {
+    className: "summary-section"
+  }, React.createElement("div", {
+    className: "summary-header"
+  }, React.createElement("span", {
+    className: "summary-title"
+  }, "settings_name \uC0C1\uC138 \uACB0\uACFC"), React.createElement("button", {
+    className: "copy-btn",
+    onClick: () => setShowSettingsDetail(value => !value),
+    "aria-expanded": showSettingsDetail
+  }, showSettingsDetail ? "\uC811\uAE30 \u25B2" : "\uD3BC\uCE58\uAE30 \u25BC")), showSettingsDetail && React.createElement("div", {
+    style: {
+      overflowX: 'auto'
+    }
+  }, React.createElement("table", {
+    className: "stable",
+    style: {
+      minWidth: '720px'
+    }
+  }, React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", {
+    style: {
+      width: '90px'
+    }
+  }, "\uBE0C\uB79C\uB4DC"), React.createElement("th", null, "settings_name"), React.createElement("th", {
+    style: {
+      width: '100px'
+    }
+  }, "cid"))), React.createElement("tbody", null, data.detailRows.map(row => React.createElement("tr", {
+    key: `${row.brand}-${row.settingsName}`
+  }, React.createElement("td", {
+    className: "bg-light"
+  }, row.brand), React.createElement("td", {
+    style: {
+      textAlign: 'left',
+      whiteSpace: 'normal',
+      wordBreak: 'break-word'
+    }
+  }, row.settingsName), React.createElement("td", {
+    style: {
+      fontWeight: '800',
+      color: '#4F46E5'
+    }
+  }, fmt(row.cid)))))))), React.createElement("div", {
+    className: "summary-section"
+  }, React.createElement("div", {
+    className: "summary-header"
+  }, React.createElement("span", {
+    className: "summary-title"
+  }, "Excel \uBD99\uC5EC\uB123\uAE30")), React.createElement("p", {
+    style: {
+      fontSize: '12px',
+      color: '#8B95A1',
+      lineHeight: 1.7,
+      margin: '0 0 16px'
+    }
+  }, "\uBCF5\uC0AC \uBC84\uD2BC\uC744 \uB204\uB978 \uB4A4 \uC6D4\uAC04 \uB9AC\uD3EC\uD2B8\uC758 \uB300\uCCB4\uBB38\uC790 \uBC1C\uC1A1\uC131\uACF5\uAC74\uC218 \uCCAB \uC140\uC5D0 \uBD99\uC5EC\uB123\uC73C\uC138\uC694. \uAC12\uC774 \uC5C6\uB294 Campaign\uC740 ", React.createElement("strong", null, "-"), "\uB85C \uC720\uC9C0\uB429\uB2C8\uB2E4."), React.createElement(MonthlyFallbackExcelTable, {
+    title: React.createElement(React.Fragment, null, React.createElement("span", {
+      style: {
+        color: '#2563EB'
+      }
+    }, "Samsonite"), " \uBD99\uC5EC\uB123\uAE30 \uACB0\uACFC"),
+    rows: data.excelSS,
+    brandLabel: "Samsonite"
+  }), React.createElement(MonthlyFallbackExcelTable, {
+    title: React.createElement(React.Fragment, null, React.createElement("span", {
+      style: {
+        color: '#C53030'
+      }
+    }, "American Tourister"), " \uBD99\uC5EC\uB123\uAE30 \uACB0\uACFC"),
+    rows: data.excelAT,
+    brandLabel: "American Tourister"
+  })), data.unmappedSettings.length > 0 && React.createElement("div", {
+    className: "summary-section"
+  }, React.createElement("div", {
+    className: "summary-header"
+  }, React.createElement("span", {
+    className: "summary-title"
+  }, "\uBBF8\uB9E4\uD551 settings_name")), React.createElement("table", {
+    className: "stable"
+  }, React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", null, "settings_name"), React.createElement("th", {
+    style: {
+      width: '110px'
+    }
+  }, "\uC0C1\uD0DC"))), React.createElement("tbody", null, data.unmappedSettings.map(name => React.createElement("tr", {
+    key: name
+  }, React.createElement("td", {
+    style: {
+      textAlign: 'left',
+      whiteSpace: 'normal',
+      wordBreak: 'break-word'
+    }
+  }, name), React.createElement("td", {
+    style: {
+      fontWeight: '700',
+      color: '#CA8A04'
+    }
+  }, "\uBBF8\uB9E4\uD551")))))));
+}
+function MonthlyEmailFileSlot({ label, hint, fileState, onFile, onClear }) {
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef(null);
+  const acceptFile = file => {
+    if (file)
+      onFile(file);
+  };
+  return React.createElement("div", {
+    onDragOver: e => { e.preventDefault(); setDragging(true); },
+    onDragLeave: e => { e.preventDefault(); setDragging(false); },
+    onDrop: e => {
+      e.preventDefault();
+      setDragging(false);
+      acceptFile(e.dataTransfer.files[0]);
+    },
+    style: {
+      background: dragging ? '#EEF2FF' : '#FAFAFA',
+      border: `1.5px ${dragging ? 'dashed #4F46E5' : 'solid #E5E8EC'}`,
+      borderRadius: '14px', padding: '16px', minHeight: '150px',
+      display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '10px',
+      transition: 'all 0.15s'
+    }
+  }, React.createElement("div", null,
+    React.createElement("div", { style: { fontSize: '13px', fontWeight: '800', color: '#333D4B', marginBottom: '4px' } }, label),
+    React.createElement("div", { style: { fontSize: '11px', color: '#8B95A1', lineHeight: 1.5 } }, hint),
+    fileState && React.createElement("div", {
+      style: {
+        marginTop: '10px', padding: '8px 10px', borderRadius: '8px',
+        background: fileState.error ? '#FEF2F2' : '#ECFDF5',
+        color: fileState.error ? '#B91C1C' : '#047857', fontSize: '11px', lineHeight: 1.5,
+        wordBreak: 'break-all'
+      }
+    }, React.createElement("strong", null, fileState.error ? '구조 오류' : '입력 완료'),
+      React.createElement("div", null, fileState.name),
+      fileState.error && React.createElement("div", { style: { marginTop: '3px' } }, fileState.error))),
+  React.createElement("div", { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+    React.createElement("input", {
+      ref: inputRef, type: 'file', accept: '.csv,text/csv', style: { display: 'none' },
+      onChange: e => { acceptFile(e.target.files[0]); e.target.value = ''; }
+    }),
+    React.createElement("button", { className: 'retry-btn', onClick: () => inputRef.current && inputRef.current.click() }, fileState ? '다시 선택' : 'CSV 선택'),
+    fileState && React.createElement("button", { className: 'raw-toggle', onClick: onClear, style: { marginTop: 0 } }, '초기화')));
+}
+function MonthlyEmailInput({ files, onFile, onClear, onResetAll, onAnalyze }) {
+  const configs = [
+    ['SS', 'Samsonite', [['ssSend', '① Email Send Sum', 'Journey_Name 및 발송 지표 CSV'], ['ssConversion', '② Email Conversion Tracking Stats', 'AccountName 헤더가 포함된 전환 CSV']]],
+    ['AT', 'American Tourister', [['atSend', '③ Email Send Sum', 'Journey_Name 및 발송 지표 CSV'], ['atConversion', '④ Email Conversion Tracking Stats', 'AccountName 헤더가 포함된 전환 CSV']]],
+  ];
+  const validCount = MONTHLY_EMAIL_REQUIRED_SLOTS.filter(key => files[key] && files[key].parsed && !files[key].error).length;
+  return React.createElement("div", {
+    style: { background: '#fff', borderRadius: '24px', boxShadow: '0 4px 24px rgba(0,0,0,0.08)', padding: '2.5rem 2rem' }
+  }, React.createElement("p", { style: { margin: '0 0 6px', fontSize: '20px', fontWeight: '800', color: '#333D4B', letterSpacing: '-0.03em' } }, '먼슬리 이메일 집계'),
+  React.createElement("p", { style: { margin: '0 0 22px', fontSize: '14px', color: '#8B95A1', lineHeight: 1.6 } },
+    '브랜드별 Send Sum과 Conversion Tracking CSV를 모두 입력하면 Campaign 12종의 이메일 지표를 생성합니다.'),
+  configs.map(([brandKey, brandLabel, slots]) => React.createElement("div", { key: brandKey, style: { marginBottom: '22px' } },
+    React.createElement("div", { style: { fontSize: '14px', fontWeight: '800', color: brandKey === 'SS' ? '#2563EB' : '#C53030', marginBottom: '10px' } }, brandLabel),
+    React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' } },
+      slots.map(([key, label, hint]) => React.createElement(MonthlyEmailFileSlot, {
+        key, label, hint, fileState: files[key], onFile: file => onFile(key, file), onClear: () => onClear(key)
+      }))))),
+  React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '8px' } },
+    React.createElement("span", { style: { fontSize: '12px', color: validCount === 4 ? '#047857' : '#8B95A1', fontWeight: '700' } }, `${validCount}/4개 파일 확인 완료`),
+    React.createElement("div", { style: { display: 'flex', gap: '8px' } },
+      validCount > 0 && React.createElement("button", { className: 'retry-btn', onClick: onResetAll }, '전체 초기화'),
+      React.createElement("button", { className: 'analyze-btn', disabled: validCount !== 4, onClick: onAnalyze }, '분석하기'))));
+}
+function MonthlyEmailBrandTable({ title, brandLabel, rows, color }) {
+  const copyValues = () => writeClipboardText(buildMonthlyEmailClipboard(rows), `${brandLabel} 이메일 결과 12행 × 5열이 복사되었습니다.`);
+  return React.createElement("div", {
+    style: { background: '#fff', padding: '24px', borderRadius: '20px', boxShadow: '0 2px 16px rgba(0,0,0,0.07)', marginBottom: '24px' }
+  }, React.createElement("div", { className: 'summary-header' },
+    React.createElement("h3", { className: 'summary-title', style: { color } }, title),
+    React.createElement("button", { className: 'copy-btn', onClick: copyValues }, '결과 복사')),
+  React.createElement("div", { style: { overflowX: 'auto' } }, React.createElement("table", { className: 'stable', style: { minWidth: '820px', marginBottom: 0 } },
+    React.createElement("thead", null, React.createElement("tr", null,
+      React.createElement("th", null, 'Campaign Name'), React.createElement("th", null, '발송성공건수'), React.createElement("th", null, '오픈수'),
+      React.createElement("th", null, '클릭수'), React.createElement("th", null, '전환수'), React.createElement("th", null, '전환매출'))),
+    React.createElement("tbody", null, rows.map(row => React.createElement("tr", { key: row.campaign },
+      React.createElement("td", { className: 'bg-light', style: { textAlign: 'left' } }, row.campaign),
+      React.createElement("td", null, fmt(row.delivered)), React.createElement("td", null, fmt(row.opens)),
+      React.createElement("td", null, fmt(row.clicks)), React.createElement("td", null, fmt(row.conversions)),
+      React.createElement("td", { style: { fontWeight: '700', color: row.revenue ? color : '#8B95A1' } }, `₩${fmt(row.revenue)}`)))))));
+}
+function MonthlyEmailResult({ data }) {
+  const [showUnmapped, setShowUnmapped] = useState(false);
+  useEffect(() => setShowUnmapped(false), [data]);
+  return React.createElement(React.Fragment, null,
+    (data.unmapped.length > 0 || data.unsupportedItems.length > 0) && React.createElement("div", {
+      style: { background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '14px', padding: '14px 16px', marginBottom: '20px', fontSize: '12px', color: '#92400E', lineHeight: 1.7 }
+    }, data.unmapped.length > 0 && React.createElement("div", null, `Campaign 미매핑 원본 이름이 ${fmt(data.unmapped.length)}개 있습니다. 해당 값은 12종 결과에서 제외했습니다.`),
+       data.unsupportedItems.length > 0 && React.createElement("div", null, `지원하지 않는 ConversionItemName: ${data.unsupportedItems.join(', ')}`)),
+    React.createElement(MonthlyEmailBrandTable, { title: 'Samsonite', brandLabel: 'Samsonite', rows: data.ssRows, color: '#2563EB' }),
+    React.createElement(MonthlyEmailBrandTable, { title: 'American Tourister', brandLabel: 'American Tourister', rows: data.atRows, color: '#C53030' }),
+    data.unmapped.length > 0 && React.createElement("div", { className: 'summary-section' },
+      React.createElement("div", { className: 'summary-header' },
+        React.createElement("span", { className: 'summary-title' }, `미매핑 항목 (${fmt(data.unmapped.length)})`),
+        React.createElement("button", { className: 'copy-btn', onClick: () => setShowUnmapped(value => !value), "aria-expanded": showUnmapped }, showUnmapped ? '접기 ▲' : '펼치기 ▼')),
+      showUnmapped && React.createElement("div", { style: { overflowX: 'auto' } }, React.createElement("table", { className: 'stable', style: { minWidth: '720px' } },
+        React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", null, '브랜드'), React.createElement("th", null, '데이터 종류'), React.createElement("th", null, '원본 이름'))),
+        React.createElement("tbody", null, data.unmapped.map(item => React.createElement("tr", { key: `${item.brand}-${item.dataType}-${item.rawName}` },
+          React.createElement("td", { className: 'bg-light' }, item.brand), React.createElement("td", null, item.dataType),
+          React.createElement("td", { style: { textAlign: 'left', whiteSpace: 'normal', wordBreak: 'break-word' } }, item.rawName))))))));
+}
+function MonthlyOperationInput({ files, issues, dragging, onFiles, onReset, onDragChange }) {
+  const inputRef = useRef(null);
+  const validCount = MONTHLY_OPERATION_REQUIRED_SLOTS.filter(key => files[key] && files[key].parsed && !files[key].error).length;
+  const acceptFiles = list => {
+    const selected = Array.from(list || []);
+    if (selected.length) onFiles(selected);
+  };
+  return React.createElement("div", {
+    onDragOver: e => { e.preventDefault(); onDragChange(true); },
+    onDragLeave: e => { e.preventDefault(); onDragChange(false); },
+    onDrop: e => { e.preventDefault(); onDragChange(false); acceptFiles(e.dataTransfer.files); },
+    style: {
+      background: dragging ? '#EEF2FF' : '#fff', borderRadius: '24px',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.08)', padding: '2.5rem 2rem',
+      border: dragging ? '2px dashed #4F46E5' : '2px solid transparent', transition: 'all 0.2s'
+    }
+  }, React.createElement("p", { style: { margin: '0 0 6px', fontSize: '20px', fontWeight: '800', color: '#333D4B', letterSpacing: '-0.03em' } }, validCount > 0 ? '월간 운영보고 CSV 추가·교체' : '월간 운영보고'),
+  React.createElement("p", { style: { margin: '0 0 20px', fontSize: '14px', color: '#8B95A1', lineHeight: 1.7 } },
+    '월간 대체문자 CSV 1개와 이메일 CSV 4개 중 필요한 파일을 드래그 앤 드롭하거나 다중 선택하세요. 입력된 파일만 즉시 집계하고, 미첨부 지표는 표에서 공백으로 유지합니다. 이후 누락 파일을 추가하거나 같은 유형의 파일을 다시 선택해 교체할 수 있습니다. 대체문자는 원본 문자열 기준 channel1_f_code가 정확히 0이 아니고, channel2 = LMS이며, channel2_f_code가 정확히 0인 행만 성공으로 집계합니다. channel2_f_code의 00, 000은 제외됩니다.'),
+  React.createElement("input", {
+    ref: inputRef, type: 'file', accept: '.csv,text/csv', multiple: true, style: { display: 'none' },
+    onChange: e => { acceptFiles(e.target.files); e.target.value = ''; }
+  }),
+  React.createElement("button", { className: 'analyze-btn', onClick: () => inputRef.current && inputRef.current.click(), style: { width: '100%', padding: '16px' } },
+    validCount > 0 ? 'CSV 파일 추가 또는 교체' : 'CSV 파일 선택'),
+  React.createElement("div", { style: { marginTop: '18px', display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' } },
+    MONTHLY_OPERATION_REQUIRED_SLOTS.map(key => {
+      const item = files[key];
+      return React.createElement("div", { key, style: {
+        padding: '12px 14px', borderRadius: '12px', border: `1px solid ${item ? '#A7F3D0' : '#E5E8EC'}`,
+        background: item ? '#ECFDF5' : '#FAFAFA', minHeight: '58px'
+      } }, React.createElement("div", { style: { fontSize: '11px', fontWeight: '800', color: item ? '#047857' : '#8B95A1' } },
+        `${item ? '확인 완료' : '대기'} · ${MONTHLY_OPERATION_SLOT_LABELS[key]}`),
+        item && React.createElement("div", { style: { marginTop: '4px', fontSize: '11px', color: '#333D4B', wordBreak: 'break-all' } }, item.name));
+    })),
+  issues.length > 0 && React.createElement("div", { style: { marginTop: '14px', padding: '12px 14px', borderRadius: '12px', background: '#FEF2F2', border: '1px solid #FECACA', color: '#B91C1C', fontSize: '11px', lineHeight: 1.6 } },
+    issues.map((issue, index) => React.createElement("div", { key: `${issue.name}-${index}` }, `${issue.name}: ${issue.error}`))),
+  React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' } },
+    React.createElement("span", { style: { fontSize: '12px', color: validCount === 5 ? '#047857' : '#8B95A1', fontWeight: '700' } }, `${validCount}/5개 파일 확인 완료`),
+    validCount > 0 && React.createElement("button", { className: 'retry-btn', onClick: onReset }, '전체 초기화')));
+}
+function MonthlyOperationBrandTable({ title, brandLabel, rows, color }) {
+  const copyValues = () => {
+    const clipboard = buildMonthlyOperationClipboard(rows);
+    if (clipboard.columnCount === 0) {
+      alert(`${brandLabel}에서 복사할 결과가 없습니다.`);
+      return;
+    }
+    writeClipboardText(clipboard.text, `${brandLabel} 월간 운영보고 결과 12행 × ${clipboard.columnCount}열이 복사되었습니다.`);
+  };
+  const displayMetric = value => value === null || value === undefined ? '' : Number(value) === 0 ? '-' : fmt(value);
+  return React.createElement("div", { style: { background: '#fff', padding: '24px', borderRadius: '20px', boxShadow: '0 2px 16px rgba(0,0,0,0.07)', marginBottom: '24px' } },
+    React.createElement("div", { className: 'summary-header' },
+      React.createElement("h3", { className: 'summary-title', style: { color } }, title),
+      React.createElement("button", { className: 'copy-btn', onClick: copyValues }, '결과 복사')),
+    React.createElement("div", { style: { overflowX: 'auto' } }, React.createElement("table", { className: 'stable', style: { minWidth: '920px', marginBottom: 0 } },
+      React.createElement("thead", null, React.createElement("tr", null,
+        React.createElement("th", null, 'Campaign Name'),
+        React.createElement("th", null, '대체문자 발송성공건수'),
+        React.createElement("th", null, '이메일 발송성공건수'),
+        React.createElement("th", null, '오픈수'), React.createElement("th", null, '클릭수'),
+        React.createElement("th", null, '전환수'), React.createElement("th", null, '전환매출'))),
+      React.createElement("tbody", null, rows.map(row => React.createElement("tr", { key: row.campaign },
+        React.createElement("td", { className: 'bg-light', style: { textAlign: 'left' } }, row.campaign),
+        React.createElement("td", null, row.fallbackSuccess === null || row.fallbackSuccess === undefined ? '' : row.fallbackSuccess === '-' ? '-' : fmt(row.fallbackSuccess)),
+        React.createElement("td", null, displayMetric(row.delivered)),
+        React.createElement("td", null, displayMetric(row.opens)), React.createElement("td", null, displayMetric(row.clicks)),
+        React.createElement("td", null, displayMetric(row.conversions)),
+        React.createElement("td", { style: { fontWeight: '700', color: row.revenue ? color : '#8B95A1' } }, row.revenue === null || row.revenue === undefined ? '' : row.revenue ? `₩${fmt(row.revenue)}` : '-')))))));
+}
+function MonthlyOperationResult({ data }) {
+  const [showDetails, setShowDetails] = useState(false);
+  const fallback = data.fallback;
+  const email = data.email;
+  useEffect(() => setShowDetails(false), [data]);
+  const cards = fallback ? [['Excel 반영 대체문자', fallback.summary.total, '#333D4B'], ['SS', fallback.summary.ss, '#2563EB'], ['AT', fallback.summary.at, '#C53030'], ['매핑 제외', fallback.summary.unclassified, '#8B95A1']] : [];
+  const cardsElement = fallback ? React.createElement("div", { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '24px' } },
+    cards.map(([label, value, color]) => React.createElement("div", { key: label, style: { background: '#fff', border: '1px solid #E5E8EC', borderRadius: '14px', padding: '16px', textAlign: 'center' } },
+      React.createElement("div", { style: { fontSize: '11px', fontWeight: '700', color: '#8B95A1', marginBottom: '6px' } }, label),
+      React.createElement("div", { style: { fontSize: '22px', fontWeight: '800', color } }, fmt(value))))) : null;
+  const hasWarnings = (fallback && (fallback.unmappedSettings.length > 0 || fallback.summary.unclassified > 0)) || email.unmapped.length > 0 || email.unsupportedItems.length > 0;
+  const warningElement = hasWarnings ? React.createElement("div", {
+    style: { background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '14px', padding: '14px 16px', marginBottom: '20px', fontSize: '12px', color: '#92400E', lineHeight: 1.7 }
+  }, fallback && fallback.summary.unclassified > 0 && React.createElement("div", null, `Excel settings_name 매핑 제외 대체문자 ${fmt(fallback.summary.unclassified)}건`),
+     fallback && fallback.unmappedSettings.length > 0 && React.createElement("div", null, `대체문자 Campaign 미매핑 settings_name ${fmt(fallback.unmappedSettings.length)}개`),
+     email.unmapped.length > 0 && React.createElement("div", null, `이메일 Campaign 미매핑 원본 이름 ${fmt(email.unmapped.length)}개`),
+     email.unsupportedItems.length > 0 && React.createElement("div", null, `지원하지 않는 ConversionItemName: ${email.unsupportedItems.join(', ')}`)) : null;
+  const fallbackDetailTable = fallback ? React.createElement("div", { style: { overflowX: 'auto' } },
+    React.createElement("table", { className: 'stable', style: { minWidth: '720px' } },
+      React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", null, '브랜드'), React.createElement("th", null, 'settings_name'), React.createElement("th", null, '성공건수'))),
+      React.createElement("tbody", null, fallback.detailRows.map(row => React.createElement("tr", { key: `${row.brand}-${row.settingsName}` },
+        React.createElement("td", { className: 'bg-light' }, row.brand),
+        React.createElement("td", { style: { textAlign: 'left', whiteSpace: 'normal', wordBreak: 'break-word' } }, row.settingsName),
+        React.createElement("td", null, fmt(row.cid))))))) : null;
+  const emailUnmappedTable = email.unmapped.length > 0 ? React.createElement(React.Fragment, null,
+    React.createElement("h4", { style: { margin: '20px 0 8px', color: '#333D4B' } }, '이메일 미매핑 항목'),
+    React.createElement("table", { className: 'stable' },
+      React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", null, '브랜드'), React.createElement("th", null, '종류'), React.createElement("th", null, '원본 이름'))),
+      React.createElement("tbody", null, email.unmapped.map(item => React.createElement("tr", { key: `${item.brand}-${item.dataType}-${item.rawName}` },
+        React.createElement("td", null, item.brand), React.createElement("td", null, item.dataType),
+        React.createElement("td", { style: { textAlign: 'left', whiteSpace: 'normal', wordBreak: 'break-word' } }, item.rawName)))))) : null;
+  const detailElement = React.createElement("div", { className: 'summary-section' },
+    React.createElement("div", { className: 'summary-header' }, React.createElement("span", { className: 'summary-title' }, '상세 결과 및 미매핑 항목'),
+      React.createElement("button", { className: 'copy-btn', onClick: () => setShowDetails(value => !value), 'aria-expanded': showDetails }, showDetails ? '접기 ▲' : '펼치기 ▼')),
+    showDetails && React.createElement(React.Fragment, null,
+      fallback && React.createElement("h4", { style: { margin: '16px 0 8px', color: '#333D4B' } }, 'settings_name 상세 결과'),
+      fallbackDetailTable, emailUnmappedTable));
+  return React.createElement(React.Fragment, null, cardsElement, warningElement,
+    React.createElement(MonthlyOperationBrandTable, { title: 'Samsonite', brandLabel: 'Samsonite', rows: data.ssRows, color: '#2563EB' }),
+    React.createElement(MonthlyOperationBrandTable, { title: 'American Tourister', brandLabel: 'American Tourister', rows: data.atRows, color: '#C53030' }),
+    detailElement);
+}
 function ContextMenu({ x, y, onSave, onCopy, onClose }) {
     const menuRef = useRef();
     useEffect(() => {
@@ -1671,6 +2580,18 @@ function App() {
     const [selectedFallbackActivitiesAT, setSelectedFallbackActivitiesAT] = useState([]);
     const [fallbackInput, setFallbackInput] = useState("");
     const [fallbackDrag, setFallbackDrag] = useState(false);
+    // 먼슬리 대체문자 CSV 상태
+    const [monthlyFallbackData, setMonthlyFallbackData] = useState(null);
+    const [monthlyFallbackInput, setMonthlyFallbackInput] = useState("");
+    const [monthlyFallbackDrag, setMonthlyFallbackDrag] = useState(false);
+    // 먼슬리 이메일 CSV 4개 상태
+    const [monthlyEmailFiles, setMonthlyEmailFiles] = useState({});
+    const [monthlyEmailData, setMonthlyEmailData] = useState(null);
+    // 월간 운영보고 통합 입력 상태
+    const [monthlyOperationFiles, setMonthlyOperationFiles] = useState({});
+    const [monthlyOperationIssues, setMonthlyOperationIssues] = useState([]);
+    const [monthlyOperationData, setMonthlyOperationData] = useState(null);
+    const [monthlyOperationDrag, setMonthlyOperationDrag] = useState(false);
     const doneSlots = slots.filter(s => s.parsed);
     const doneCount = doneSlots.length;
     const canAddMore = slots.length < MAX_SLOTS;
@@ -1789,6 +2710,120 @@ function App() {
     const toggleFallbackActivity = (setter) => (activity) => {
         setter(prev => prev.includes(activity) ? prev.filter(t => t !== activity) : [...prev, activity]);
     };
+    /* ── 먼슬리 대체문자 CSV 핸들러 ── */
+    function handleMonthlyFallbackSubmit(rawText) {
+        const parsed = parseMonthlyFallbackCSV(rawText);
+        if (!parsed || parsed.error) {
+            alert((parsed === null || parsed === void 0 ? void 0 : parsed.error) || "올바른 CSV 형식이 아닙니다.");
+            return;
+        }
+        setMonthlyFallbackData(parsed);
+        setMonthlyFallbackInput("");
+    }
+    function handleMonthlyFallbackDrop(e) {
+        e.preventDefault();
+        setMonthlyFallbackDrag(false);
+        const file = e.dataTransfer.files[0];
+        if (!file)
+            return;
+        const reader = new FileReader();
+        reader.onload = ev => handleMonthlyFallbackSubmit(String(ev.target.result || '').trim());
+        reader.readAsText(file);
+    }
+    function resetMonthlyFallback() {
+        setMonthlyFallbackData(null);
+        setMonthlyFallbackInput("");
+        setMonthlyFallbackDrag(false);
+    }
+    /* ── 먼슬리 이메일 CSV 핸들러 ── */
+    function handleMonthlyEmailFile(slotKey, file) {
+        if (!file)
+            return;
+        setMonthlyEmailData(null);
+        const reader = new FileReader();
+        reader.onload = event => {
+            const text = String(event.target.result || '');
+            const parsed = slotKey.endsWith('Send') ? parseEmailSendSumCSV(text) : parseEmailConversionCSV(text);
+            const expectedBrand = slotKey.startsWith('ss') ? 'SS' : 'AT';
+            let validationError = (parsed === null || parsed === void 0 ? void 0 : parsed.error) || null;
+            if (!validationError && !parsed.detectedBrand)
+                validationError = 'CSV 내용에서 브랜드를 판별할 수 없거나 SS/AT 데이터가 함께 포함되어 있습니다.';
+            else if (!validationError && parsed.detectedBrand !== expectedBrand)
+                validationError = `${expectedBrand} 입력 슬롯과 CSV 내부 브랜드(${parsed.detectedBrand})가 일치하지 않습니다.`;
+            setMonthlyEmailFiles(prev => ({
+                ...prev,
+                [slotKey]: {
+                    name: file.name,
+                    text,
+                    parsed: parsed && !validationError ? parsed : null,
+                    error: validationError,
+                },
+            }));
+        };
+        reader.onerror = () => {
+            setMonthlyEmailFiles(prev => ({ ...prev, [slotKey]: { name: file.name, parsed: null, error: '파일을 읽을 수 없습니다.' } }));
+        };
+        reader.readAsText(file);
+    }
+    function clearMonthlyEmailFile(slotKey) {
+        setMonthlyEmailData(null);
+        setMonthlyEmailFiles(prev => {
+            const next = { ...prev };
+            delete next[slotKey];
+            return next;
+        });
+    }
+    function resetMonthlyEmail() {
+        setMonthlyEmailFiles({});
+        setMonthlyEmailData(null);
+    }
+    function analyzeMonthlyEmail() {
+        const missing = MONTHLY_EMAIL_REQUIRED_SLOTS.filter(key => !monthlyEmailFiles[key] || !monthlyEmailFiles[key].parsed || monthlyEmailFiles[key].error);
+        if (missing.length > 0) {
+            alert('정상 확인된 CSV 4개를 모두 입력해 주세요.');
+            return;
+        }
+        setMonthlyEmailData(buildMonthlyEmailData(monthlyEmailFiles));
+    }
+    /* ── 월간 운영보고 5개 CSV 통합 핸들러 ── */
+    async function handleMonthlyOperationFiles(selectedFiles) {
+        const csvFiles = Array.from(selectedFiles || []);
+        if (csvFiles.length === 0) return;
+        const issues = [];
+        const additions = {};
+        await Promise.all(csvFiles.map(async file => {
+            if (!/\.csv$/i.test(file.name)) {
+                issues.push({ name: file.name, error: 'CSV 파일만 입력할 수 있습니다.' });
+                return;
+            }
+            try {
+                const text = await file.text();
+                const classified = classifyMonthlyOperationCSV(text);
+                if (classified.error) {
+                    issues.push({ name: file.name, error: classified.error });
+                    return;
+                }
+                if (additions[classified.slotKey]) {
+                    issues.push({ name: file.name, error: `${MONTHLY_OPERATION_SLOT_LABELS[classified.slotKey]} 파일이 한 번에 두 개 입력되었습니다.` });
+                    return;
+                }
+                additions[classified.slotKey] = { name: file.name, text, parsed: classified.parsed };
+            } catch (_error) {
+                issues.push({ name: file.name, error: '파일을 읽을 수 없습니다.' });
+            }
+        }));
+        const next = { ...monthlyOperationFiles, ...additions };
+        setMonthlyOperationFiles(next);
+        setMonthlyOperationIssues(issues);
+        const hasValidFile = MONTHLY_OPERATION_REQUIRED_SLOTS.some(key => next[key] && next[key].parsed);
+        setMonthlyOperationData(hasValidFile ? buildMonthlyOperationData(next) : null);
+    }
+    function resetMonthlyOperation() {
+        setMonthlyOperationFiles({});
+        setMonthlyOperationIssues([]);
+        setMonthlyOperationData(null);
+        setMonthlyOperationDrag(false);
+    }
     const toggleTag = (setter, current) => (tag) => {
         if (current.includes(tag))
             setter(current.filter(t => t !== tag));
@@ -1890,7 +2925,11 @@ function App() {
             React.createElement("button", { className: `tab-btn${activeTab === 'fallback' ? ' active' : ''}${fallbackData ? ' has-data' : ''}`, onClick: () => setActiveTab('fallback') },
                 React.createElement("span", { className: "tab-dot" }),
                 "\uB300\uCCB4\uBB38\uC790",
-                fallbackData && React.createElement("span", { className: "tab-badge", style: { background: "#4F46E5" } }, "CSV"))),
+                fallbackData && React.createElement("span", { className: "tab-badge", style: { background: "#4F46E5" } }, "CSV")),
+            React.createElement("button", { className: `tab-btn${activeTab === 'monthlyOperation' ? ' active' : ''}${monthlyOperationData ? ' has-data' : ''}`, onClick: () => setActiveTab('monthlyOperation') },
+                React.createElement("span", { className: "tab-dot" }),
+                "월간 운영보고",
+                monthlyOperationData && React.createElement("span", { className: "tab-badge", style: { background: "#10B981" } }, `${MONTHLY_OPERATION_REQUIRED_SLOTS.filter(key => monthlyOperationFiles[key] && monthlyOperationFiles[key].parsed).length} CSV`))),
         React.createElement("div", { style: { maxWidth: "940px", margin: "0 auto", padding: "2rem 1.5rem" } },
             activeTab === 'edm' && (React.createElement("div", { className: "tab-panel" },
                 slots.length === 0 && (React.createElement("div", { style: {
@@ -2132,7 +3171,127 @@ function App() {
                             " \uB300\uCCB4\uBB38\uC790 \uC131\uACF5 \uBD84\uC11D"), data: fallbackData.data, activities: fallbackActivitiesSS, selectedActivities: selectedFallbackActivitiesSS, onActivityToggle: toggleFallbackActivity(setSelectedFallbackActivitiesSS), onSelectAll: () => setSelectedFallbackActivitiesSS(fallbackActivitiesSS), onResetActivities: () => setSelectedFallbackActivitiesSS([]) }),
                     React.createElement(FallbackSMSBrandTable, { brandKey: "AT", brandLabel: "\uC544\uBA54\uB9AC\uCE78 \uD22C\uC5B4\uB9AC\uC2A4\uD130", title: React.createElement(React.Fragment, null,
                             React.createElement("span", { style: { color: "#C53030" } }, "\uC544\uBA54\uB9AC\uCE78 \uD22C\uC5B4\uB9AC\uC2A4\uD130"),
-                            " \uB300\uCCB4\uBB38\uC790 \uC131\uACF5 \uBD84\uC11D"), data: fallbackData.data, activities: fallbackActivitiesAT, selectedActivities: selectedFallbackActivitiesAT, onActivityToggle: toggleFallbackActivity(setSelectedFallbackActivitiesAT), onSelectAll: () => setSelectedFallbackActivitiesAT(fallbackActivitiesAT), onResetActivities: () => setSelectedFallbackActivitiesAT([]) })))))),
+                            " \uB300\uCCB4\uBB38\uC790 \uC131\uACF5 \uBD84\uC11D"), data: fallbackData.data, activities: fallbackActivitiesAT, selectedActivities: selectedFallbackActivitiesAT, onActivityToggle: toggleFallbackActivity(setSelectedFallbackActivitiesAT), onSelectAll: () => setSelectedFallbackActivitiesAT(fallbackActivitiesAT), onResetActivities: () => setSelectedFallbackActivitiesAT([]) }))))), activeTab === 'monthlyFallback' && React.createElement("div", {
+    className: "tab-panel"
+  }, !monthlyFallbackData && React.createElement("div", {
+    style: {
+      background: monthlyFallbackDrag ? "#EEF2FF" : "#fff",
+      borderRadius: "24px",
+      boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
+      padding: "2.5rem 2rem",
+      border: monthlyFallbackDrag ? "2px dashed #4F46E5" : "2px solid transparent",
+      transition: "all 0.2s"
+    },
+    onDragOver: e => {
+      e.preventDefault();
+      setMonthlyFallbackDrag(true);
+    },
+    onDragLeave: e => {
+      e.preventDefault();
+      setMonthlyFallbackDrag(false);
+    },
+    onDrop: handleMonthlyFallbackDrop
+  }, React.createElement("p", {
+    style: {
+      margin: "0 0 6px",
+      fontSize: "20px",
+      fontWeight: "800",
+      color: "#333D4B",
+      letterSpacing: "-0.03em"
+    }
+  }, "\uBA3C\uC2AC\uB9AC \uB300\uCCB4\uBB38\uC790 \uBC1C\uC1A1 \uACB0\uACFC \uBD84\uC11D"), React.createElement("p", {
+    style: {
+      margin: "0 0 20px",
+      fontSize: "14px",
+      color: "#8B95A1",
+      lineHeight: 1.6
+    }
+  }, "\uBA3C\uC2AC\uB9AC \uB9AC\uD3EC\uD305 CSV\uB97C \uC785\uB825\uD558\uBA74 \uBE0C\uB79C\uB4DC \uBC0F settings_name \uAE30\uC900\uC73C\uB85C \uB300\uCCB4\uBB38\uC790 \uBC1C\uC1A1 \uC131\uACF5 \uAC74\uC218\uB97C \uC9D1\uACC4\uD569\uB2C8\uB2E4.", React.createElement("span", {
+    style: {
+      color: "#C4C9D0"
+    }
+  }, " (settings_name, cid, channel2, channel1_f_code, channel2_f_code \uCEEC\uB7FC \uD544\uC218)")), React.createElement("textarea", {
+    className: "paste-textarea",
+    value: monthlyFallbackInput,
+    onChange: e => setMonthlyFallbackInput(e.target.value),
+    placeholder: "\n예시:\n\nsettings_name,cid,channel2,channel1_f_code,channel2_f_code\nJourney_24022025_Abandoned_Browse_SS_KR,10001,LMS,8,00\nJourney_24022025_Abandoned_Cart_AT_KR,10002,LMS,B,0\n\n대체문자 성공 조건: channel1_f_code != 0 AND channel2 == LMS AND channel2_f_code == 0",
+    onKeyDown: e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && monthlyFallbackInput.trim()) {
+        handleMonthlyFallbackSubmit(monthlyFallbackInput.trim());
+      }
+    },
+    style: {
+      backgroundColor: monthlyFallbackDrag ? "#fff" : "#FAFAFA",
+      minHeight: "220px"
+    }
+  }), React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: "14px"
+    }
+  }, React.createElement("span", {
+    style: {
+      fontSize: "11px",
+      color: "#C4C9D0"
+    }
+  }, "CSV \uD30C\uC77C \uB4DC\uB798\uADF8 \uC564 \uB4DC\uB86D \uB610\uB294 \uD14D\uC2A4\uD2B8 \uBD99\uC5EC\uB123\uAE30 \xB7 Ctrl+Enter\uB85C \uBC14\uB85C \uBD84\uC11D"), React.createElement("button", {
+    className: "analyze-btn",
+    onClick: () => {
+      if (monthlyFallbackInput.trim()) handleMonthlyFallbackSubmit(monthlyFallbackInput.trim());
+    },
+    disabled: !monthlyFallbackInput.trim()
+  }, "\uBD84\uC11D\uD558\uAE30"))), monthlyFallbackData && React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: "20px"
+    }
+  }, React.createElement("p", {
+    style: {
+      margin: 0,
+      fontSize: "18px",
+      fontWeight: "800",
+      color: "#333D4B"
+    }
+  }, "\uBA3C\uC2AC\uB9AC \uB300\uCCB4\uBB38\uC790 \uBC1C\uC1A1 \uACB0\uACFC \uBD84\uC11D"), React.createElement("button", {
+    className: "retry-btn",
+    onClick: resetMonthlyFallback
+  }, "\uCC98\uC74C\uC73C\uB85C")), React.createElement(MonthlyFallbackResult, {
+    data: monthlyFallbackData
+  }))), activeTab === 'monthlyEmail' && React.createElement("div", {
+    className: "tab-panel"
+  }, !monthlyEmailData && React.createElement(MonthlyEmailInput, {
+    files: monthlyEmailFiles,
+    onFile: handleMonthlyEmailFile,
+    onClear: clearMonthlyEmailFile,
+    onResetAll: resetMonthlyEmail,
+    onAnalyze: analyzeMonthlyEmail
+  }), monthlyEmailData && React.createElement(React.Fragment, null,
+    React.createElement("div", {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }
+    }, React.createElement("p", {
+      style: { margin: 0, fontSize: '18px', fontWeight: '800', color: '#333D4B' }
+    }, '먼슬리 이메일 집계 결과'), React.createElement("button", {
+      className: 'retry-btn', onClick: resetMonthlyEmail
+    }, '처음으로')),
+    React.createElement(MonthlyEmailResult, { data: monthlyEmailData }))),
+        activeTab === 'monthlyOperation' && React.createElement("div", { className: 'tab-panel' },
+          React.createElement(MonthlyOperationInput, {
+            files: monthlyOperationFiles,
+            issues: monthlyOperationIssues,
+            dragging: monthlyOperationDrag,
+            onFiles: handleMonthlyOperationFiles,
+            onReset: resetMonthlyOperation,
+            onDragChange: setMonthlyOperationDrag
+          }),
+          monthlyOperationData && React.createElement(React.Fragment, null,
+            React.createElement("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '24px 0 20px' } },
+              React.createElement("p", { style: { margin: 0, fontSize: '18px', fontWeight: '800', color: '#333D4B' } }, '월간 운영보고 결과'),
+              React.createElement("button", { className: 'retry-btn', onClick: resetMonthlyOperation }, '처음으로')),
+            React.createElement(MonthlyOperationResult, { data: monthlyOperationData })))),
         showModal && React.createElement(PasteModal, { onClose: () => setShowModal(false), onSubmit: handleEdmSubmit }),
         ctxMenu && (React.createElement(ContextMenu, { x: ctxMenu.x, y: ctxMenu.y, onSave: () => doSaveImage(ctxMenu.elementId, ctxMenu.filename, setIsLoading), onCopy: () => doCopyImage(ctxMenu.elementId, ctxMenu.filename, setIsLoading), onClose: () => setCtxMenu(null) }))));
 }
